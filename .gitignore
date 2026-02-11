@@ -1,0 +1,48 @@
+# Inversiones MG - .gitignore
+
+# Node modules (si se usa Node.js)
+node_modules/
+
+# Archivos de entorno (si decides usar variables de entorno)
+.env
+.env.local
+.env.production
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Cache
+.cache/
+*.cache
+
+# Build outputs (si decides transpilar)
+dist/
+build/
+
+# Backups
+*.backup
+*.bak
+
+# Archivos temporales
+*.tmp
+temp/
+tmp/
+
+# Credenciales (IMPORTANTE: si decides separar config)
+# config-local.js
+# credentials.json

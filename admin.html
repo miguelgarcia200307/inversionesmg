@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="Panel de administración - Inversiones MG">
+  <title>Panel Admin - Inversiones MG</title>
+  
+  <!-- Estilos -->
+  <link rel="stylesheet" href="estilos/base.css">
+  <link rel="stylesheet" href="estilos/admin-corporate.css">
+  <link rel="stylesheet" href="estilos/wizard-obligaciones.css">
+  <link rel="stylesheet" href="estilos/obligaciones-premium.css">
+  <link rel="stylesheet" href="estilos/pagos-premium.css">
+  <link rel="stylesheet" href="estilos/documentos-premium.css">
+  <link rel="stylesheet" href="estilos/descuentos-premium.css">
+  <link rel="stylesheet" href="estilos/refinanciacion-premium.css">
+  <link rel="stylesheet" href="estilos/auditoria-premium.css">
+  
+  <!-- Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  
+  <!-- Filtro de errores de extensiones -->
+  <script>
+    // Suprimir errores de extensiones del navegador
+    window.addEventListener('error', function(e) {
+      if (e.filename && (e.filename.includes('extension://') || e.filename.includes('content.js'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        return true;
+      }
+    }, true);
+    
+    // Suprimir errores no capturados de promesas de extensiones
+    window.addEventListener('unhandledrejection', function(e) {
+      if (e.reason && e.reason.message && e.reason.message.includes('Extension context invalidated')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return true;
+      }
+    });
+    
+    // Ocultar advertencias de Supabase SES
+    const originalWarn = console.warn;
+    console.warn = function(...args) {
+      if (args[0] && typeof args[0] === 'string' && args[0].includes('SES')) {
+        return;
+      }
+      originalWarn.apply(console, args);
+    };
+  </script>
+</head>
+<body>
+  <!-- Pantalla de login -->
+  <div id="loginScreen">
+    <div class="login-card">
+      <div class="login-logo">
+        <div class="login-logo-circle">
+          💼
+        </div>
+      </div>
+      <div class="login-header">
+        <h1 class="login-title">Panel Administrativo</h1>
+        <p class="login-subtitle">Sistema de Gestión Financiera</p>
+      </div>
+      
+      <form id="loginForm" class="login-form">
+        <div class="login-form-group">
+          <label class="login-label" for="loginUser">Usuario</label>
+          <div class="login-input-wrapper">
+            <span class="login-input-icon">👤</span>
+            <input 
+              type="text" 
+              id="loginUser" 
+              class="login-input" 
+              placeholder="Ingresa tu usuario"
+              autocomplete="username"
+              required
+            >
+          </div>
+        </div>
+        
+        <div class="login-form-group">
+          <label class="login-label" for="loginPassword">Contraseña</label>
+          <div class="login-input-wrapper">
+            <span class="login-input-icon">🔒</span>
+            <input 
+              type="password" 
+              id="loginPassword" 
+              class="login-input" 
+              placeholder="••••••••"
+              autocomplete="current-password"
+              required
+              style="padding-right: 3.5rem;"
+            >
+            <button type="button" class="password-toggle" id="togglePassword" aria-label="Mostrar contraseña">
+              👁️
+            </button>
+          </div>
+        </div>
+        
+        <div class="login-error" id="loginError"></div>
+        
+        <button type="submit" class="login-button" id="btnLogin">
+          🔐 Iniciar sesión
+        </button>
+      </form>
+      
+      <div class="login-footer">
+        © 2026 Inversiones MG. Sistema de Gestión Financiera.
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel Admin -->
+  <div id="adminPanel" style="display: none;">
+    <!-- Sidebar -->
+    <aside class="admin-sidebar" id="adminSidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo">
+          <div class="sidebar-logo-icon">💼</div>
+          <div class="sidebar-logo-text">
+            <div class="sidebar-logo-title">Inversiones MG</div>
+            <div class="sidebar-logo-subtitle">Gestión Financiera</div>
+          </div>
+        </div>
+      </div>
+      
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">Principal</div>
+          <button class="nav-item active" data-view="dashboard">
+            <span class="nav-icon">📊</span>
+            <span class="nav-label">Dashboard</span>
+          </button>
+        </div>
+        
+        <div class="nav-section">
+          <div class="nav-section-title">Gestión</div>
+          <button class="nav-item" data-view="clientes">
+            <span class="nav-icon">👥</span>
+            <span class="nav-label">Clientes</span>
+          </button>
+          <button class="nav-item" data-view="obligaciones">
+            <span class="nav-icon">📋</span>
+            <span class="nav-label">Obligaciones</span>
+          </button>
+          <button class="nav-item" data-view="pagos">
+            <span class="nav-icon">💰</span>
+            <span class="nav-label">Pagos</span>
+          </button>
+        </div>
+        
+        <div class="nav-section">
+          <div class="nav-section-title">Operaciones</div>
+          <button class="nav-item" data-view="refinanciacion">
+            <span class="nav-icon">🔄</span>
+            <span class="nav-label">Refinanciación</span>
+          </button>
+          <button class="nav-item" data-view="descuentos">
+            <span class="nav-icon">🏷️</span>
+            <span class="nav-label">Descuentos</span>
+          </button>
+          <button class="nav-item" data-view="documentos">
+            <span class="nav-icon">📄</span>
+            <span class="nav-label">Documentos</span>
+          </button>
+        </div>
+        
+        <div class="nav-section">
+          <div class="nav-section-title">Sistema</div>
+          <button class="nav-item" data-view="auditoria">
+            <span class="nav-icon">🔍</span>
+            <span class="nav-label">Auditoría</span>
+          </button>
+        </div>
+      </nav>
+      
+      <div class="sidebar-footer">
+        <div class="sidebar-user">
+          <div class="sidebar-user-avatar">A</div>
+          <div class="sidebar-user-info">
+            <div class="sidebar-user-name" id="adminUserName">Admin</div>
+            <div class="sidebar-user-role">Administrador</div>
+          </div>
+        </div>
+        <button class="sidebar-logout" id="btnLogout">
+          🚪 Cerrar sesión
+        </button>
+      </div>
+    </aside>
+
+    <!-- Overlay para móvil -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Contenido Principal -->
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <button class="topbar-menu-btn" id="btnMenu" aria-label="Abrir menú">☰</button>
+        <h1 class="topbar-title" id="topbarTitle">Dashboard</h1>
+        <span class="topbar-date" id="currentDate"></span>
+      </div>
+      
+      <div class="admin-content">
+        <!-- Dashboard -->
+        <div id="viewDashboard" class="view-content"></div>
+        
+        <!-- Clientes -->
+        <div id="viewClientes" class="view-content" style="display: none;"></div>
+        
+        <!-- Obligaciones -->
+        <div id="viewObligaciones" class="view-content" style="display: none;"></div>
+        
+        <!-- Pagos -->
+        <div id="viewPagos" class="view-content" style="display: none;"></div>
+        
+        <!-- Refinanciación -->
+        <div id="viewRefinanciacion" class="view-content" style="display: none;"></div>
+        
+        <!-- Descuentos -->
+        <div id="viewDescuentos" class="view-content" style="display: none;"></div>
+        
+        <!-- Documentos -->
+        <div id="viewDocumentos" class="view-content" style="display: none;"></div>
+        
+        <!-- Auditoría -->
+        <div id="viewAuditoria" class="view-content" style="display: none;"></div>
+      </div>
+    </main>
+
+    <!-- Navegación móvil inferior -->
+    <nav class="mobile-nav">
+      <button class="mobile-nav-item active" data-view="dashboard">
+        <span class="mobile-nav-icon">📊</span>
+        <span class="mobile-nav-label">Dashboard</span>
+      </button>
+      <button class="mobile-nav-item" data-view="clientes">
+        <span class="mobile-nav-icon">👥</span>
+        <span class="mobile-nav-label">Clientes</span>
+      </button>
+      <button class="mobile-nav-item" data-view="obligaciones">
+        <span class="mobile-nav-icon">📋</span>
+        <span class="mobile-nav-label">Obligaciones</span>
+      </button>
+      <button class="mobile-nav-item" data-view="pagos">
+        <span class="mobile-nav-icon">💰</span>
+        <span class="mobile-nav-label">Pagos</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Modal genérico -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalTitle">Modal</h3>
+        <button class="modal-close" id="modalClose" aria-label="Cerrar modal">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toastAdmin" class="toast"></div>
+
+  <!-- Scripts -->
+  <script src="scripts/config.js"></script>
+  <script src="scripts/supabaseClient.js"></script>
+  <script src="scripts/payments-system.js"></script>
+  <script src="scripts/admin.js"></script>
+  <script src="scripts/admin-functions.js"></script>
+</body>
+</html>

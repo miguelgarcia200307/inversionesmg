@@ -1,0 +1,1615 @@
+/* 
+  ╔═══════════════════════════════════════════════════════════════╗
+  ║  INVERSIONES MG - CLIENTE V2                                  ║
+  ║  Sistema de Diseño Fintech Premium                             ║
+  ║  100% Responsive | Mobile First | Moderno                      ║
+  ╚═══════════════════════════════════════════════════════════════╝
+*/
+
+/* ========== VARIABLES FINTECH PREMIUM ========== */
+:root {
+  /* Paleta Principal - Azul Fintech */
+  --fintech-primary: #0066FF;
+  --fintech-primary-dark: #0052CC;
+  --fintech-primary-darker: #003D99;
+  --fintech-primary-light: #3384FF;
+  --fintech-primary-lighter: #E6F0FF;
+  
+  /* Secundaria - Naval Profesional */
+  --fintech-navy: #0A1929;
+  --fintech-navy-light: #1A2332;
+  --fintech-navy-lighter: #2A3342;
+  
+  /* Gradientes Premium */
+  --gradient-primary: linear-gradient(135deg, #0066FF 0%, #003D99 100%);
+  --gradient-card: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
+  --gradient-success: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  --gradient-warning: linear-gradient(135deg, #F59E0B 0%, #D97706 100%);
+  --gradient-danger: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+  --gradient-glass: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%);
+  
+  /* Colores Semánticos */
+  --color-success: #10B981;
+  --color-success-bg: #ECFDF5;
+  --color-success-border: #86EFAC;
+  
+  --color-warning: #F59E0B;
+  --color-warning-bg: #FFFBEB;
+  --color-warning-border: #FCD34D;
+  
+  --color-danger: #EF4444;
+  --color-danger-bg: #FEF2F2;
+  --color-danger-border: #FCA5A5;
+  
+  --color-info: #0EA5E9;
+  --color-info-bg: #F0F9FF;
+  --color-info-border: #7DD3FC;
+  
+  /* Grises Premium */
+  --gray-50: #F9FAFB;
+  --gray-100: #F3F4F6;
+  --gray-200: #E5E7EB;
+  --gray-300: #D1D5DB;
+  --gray-400: #9CA3AF;
+  --gray-500: #6B7280;
+  --gray-600: #4B5563;
+  --gray-700: #374151;
+  --gray-800: #1F2937;
+  --gray-900: #111827;
+  
+  /* Sombras Premium */
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+  --shadow-base: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.08), 0 4px 16px -4px rgba(0, 0, 0, 0.06);
+  --shadow-button: 0 4px 14px 0 rgba(0, 102, 255, 0.25);
+  
+  /* Blur Effects */
+  --blur-sm: blur(4px);
+  --blur-base: blur(8px);
+  --blur-lg: blur(16px);
+  
+  /* Radios */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+  
+  /* Espaciado Adaptativo */
+  --space-xs: clamp(0.25rem, 0.5vw, 0.5rem);
+  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
+  --space-md: clamp(0.75rem, 1.5vw, 1rem);
+  --space-lg: clamp(1rem, 2vw, 1.5rem);
+  --space-xl: clamp(1.5rem, 3vw, 2rem);
+  --space-2xl: clamp(2rem, 4vw, 3rem);
+  --space-3xl: clamp(3rem, 6vw, 4rem);
+  
+  /* Tipografía Fluida */
+  --font-xs: clamp(0.75rem, 0.9vw, 0.875rem);
+  --font-sm: clamp(0.875rem, 1vw, 1rem);
+  --font-base: clamp(1rem, 1.2vw, 1.125rem);
+  --font-lg: clamp(1.125rem, 1.4vw, 1.25rem);
+  --font-xl: clamp(1.25rem, 1.6vw, 1.5rem);
+  --font-2xl: clamp(1.5rem, 2vw, 1.875rem);
+  --font-3xl: clamp(1.875rem, 2.5vw, 2.25rem);
+  --font-4xl: clamp(2.25rem, 3vw, 3rem);
+  
+  /* Transiciones Suaves */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-bounce: 600ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ========== HEADER PREMIUM ========== */
+.client-header {
+  background: var(--fintech-navy);
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+  z-index: 100;
+}
+
+.client-header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--gradient-primary);
+  opacity: 0.9;
+  z-index: 1;
+}
+
+.client-header::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -10%;
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+  border-radius: 50%;
+  z-index: 2;
+}
+
+.client-header-content {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-lg) var(--space-xl);
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.client-logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  text-decoration: none;
+  color: white;
+  transition: transform var(--transition-base);
+}
+
+.client-logo:hover {
+  transform: translateY(-2px);
+}
+
+.client-logo-icon {
+  width: 48px;
+  height: 48px;
+  background: white;
+  color: var(--fintech-primary);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: var(--font-xl);
+  box-shadow: var(--shadow-lg);
+}
+
+.client-logo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.client-logo-brand {
+  font-size: var(--font-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.client-logo-tagline {
+  font-size: var(--font-xs);
+  opacity: 0.9;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+.btn-login {
+  padding: 0.75rem 1.5rem;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: var(--blur-base);
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  font-size: var(--font-sm);
+  text-decoration: none;
+  transition: all var(--transition-base);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-login:hover {
+  background: white;
+  color: var(--fintech-primary);
+  border-color: white;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-button);
+}
+
+/* ========== PANTALLA DE CONSULTA - COMPLETAMENTE REDISEÑADA ========== */
+.consultation-section {
+  min-height: calc(100vh - 80px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2xl) var(--space-lg);
+  background: linear-gradient(180deg, var(--gray-50) 0%, white 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.consultation-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 300px;
+  background: var(--gradient-primary);
+  opacity: 0.03;
+  z-index: 0;
+}
+
+.consultation-container {
+  max-width: 560px;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+  animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.consultation-card {
+  background: white;
+  border-radius: var(--radius-2xl);
+  padding: var(--space-3xl) var(--space-2xl);
+  box-shadow: var(--shadow-xl);
+  border: 1px solid var(--gray-100);
+}
+
+.consultation-icon {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto var(--space-xl);
+  background: var(--gradient-primary);
+  border-radius: var(--radius-xl);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  box-shadow: var(--shadow-button);
+}
+
+.consultation-title {
+  text-align: center;
+  font-size: var(--font-4xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: var(--space-sm);
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.consultation-subtitle {
+  text-align: center;
+  font-size: var(--font-lg);
+  color: var(--gray-600);
+  margin-bottom: var(--space-2xl);
+  line-height: 1.6;
+  font-weight: 400;
+}
+
+.consultation-trust {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xl);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--color-info-bg);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-info-border);
+}
+
+.trust-icon {
+  font-size: var(--font-lg);
+}
+
+.trust-text {
+  font-size: var(--font-sm);
+  color: var(--gray-700);
+  font-weight: 500;
+}
+
+.consultation-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.form-group-modern {
+  position: relative;
+}
+
+.form-label-modern {
+  display: block;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--gray-700);
+  margin-bottom: var(--space-sm);
+  letter-spacing: 0.01em;
+}
+
+.input-container {
+  position: relative;
+}
+
+.input-icon {
+  position: absolute;
+  left: 1.25rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--font-2xl);
+  pointer-events: none;
+  transition: all var(--transition-base);
+}
+
+.form-input-modern {
+  width: 100%;
+  padding: 1.25rem 1.25rem 1.25rem 4rem;
+  font-size: var(--font-xl);
+  font-weight: 600;
+  border: 2px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  background: var(--gray-50);
+  color: var(--gray-900);
+  transition: all var(--transition-base);
+  letter-spacing: 0.05em;
+}
+
+.form-input-modern::placeholder {
+  color: var(--gray-400);
+  font-weight: 500;
+}
+
+.form-input-modern:focus {
+  outline: none;
+  background: white;
+  border-color: var(--fintech-primary);
+  box-shadow: 0 0 0 4px var(--fintech-primary-lighter), var(--shadow-base);
+}
+
+.form-input-modern:focus + .input-icon {
+  transform: translateY(-50%) scale(1.1);
+}
+
+.form-input-modern.error {
+  border-color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+.form-error {
+  display: none;
+  margin-top: var(--space-sm);
+  font-size: var(--font-sm);
+  color: var(--color-danger);
+  font-weight: 500;
+}
+
+.form-error.active {
+  display: block;
+}
+
+.btn-consult {
+  width: 100%;
+  padding: 1.25rem 2rem;
+  font-size: var(--font-lg);
+  font-weight: 700;
+  color: white;
+  background: var(--gradient-primary);
+  border: none;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  box-shadow: var(--shadow-button);
+  letter-spacing: 0.02em;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-consult::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+  transition: left 0.5s;
+}
+
+.btn-consult:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px 0 rgba(0, 102, 255, 0.4);
+}
+
+.btn-consult:hover::before {
+  left: 100%;
+}
+
+.btn-consult:active {
+  transform: translateY(0);
+}
+
+.btn-consult:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-consult-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+}
+
+.btn-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ========== VISTA DE RESULTADOS PREMIUM ========== */
+.results-section {
+  padding: var(--space-2xl) 0;
+  background: linear-gradient(180deg, var(--gray-50) 0%, white 50%);
+  min-height: 100vh;
+  animation: fadeIn 0.4s ease-out;
+}
+
+.results-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 var(--space-lg);
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2xl);
+  padding-bottom: var(--space-lg);
+  border-bottom: 2px solid var(--gray-200);
+}
+
+.results-title {
+  font-size: var(--font-3xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  letter-spacing: -0.02em;
+}
+
+.btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0.75rem 1.5rem;
+  background: white;
+  color: var(--fintech-primary);
+  border: 2px solid var(--gray-200);
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  font-size: var(--font-sm);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  text-decoration: none;
+}
+
+.btn-back:hover {
+  border-color: var(--fintech-primary);
+  background: var(--fintech-primary-lighter);
+  transform: translateX(-4px);
+}
+
+/* ========== TARJETA DE INFORMACIÓN DEL CLIENTE ========== */
+.client-info-card {
+  background: white;
+  border-radius: var(--radius-xl);
+  padding: var(--space-2xl);
+  margin-bottom: var(--space-2xl);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--gray-100);
+  position: relative;
+  overflow: hidden;
+}
+
+.client-info-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  background: var(--gradient-primary);
+}
+
+.client-info-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  flex-wrap: wrap;
+}
+
+.client-info-main {
+  flex: 1;
+  min-width: 200px;
+}
+
+.client-name {
+  font-size: var(--font-3xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: var(--space-xs);
+  letter-spacing: -0.02em;
+}
+
+.client-document {
+  font-size: var(--font-lg);
+  color: var(--gray-600);
+  font-weight: 500;
+}
+
+.client-status-badge {
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-full);
+  font-size: var(--font-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.client-status-badge.status-success {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  border: 2px solid var(--color-success-border);
+}
+
+.client-status-badge.status-warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border: 2px solid var(--color-warning-border);
+}
+
+.client-status-badge.status-danger {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border: 2px solid var(--color-danger-border);
+}
+
+/* ========== GRID DE OBLIGACIONES PREMIUM ========== */
+.obligations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
+  gap: var(--space-xl);
+  margin-bottom: var(--space-2xl);
+}
+
+.obligation-card {
+  background: white;
+  border-radius: var(--radius-xl);
+  padding: var(--space-xl);
+  box-shadow: var(--shadow-card);
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition-base);
+  position: relative;
+  overflow: hidden;
+}
+
+.obligation-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 100%;
+  background: var(--gradient-primary);
+  transform: scaleY(0);
+  transition: transform var(--transition-base);
+}
+
+.obligation-card:hover {
+  border-color: var(--fintech-primary);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-4px);
+}
+
+.obligation-card:hover::before {
+  transform: scaleY(1);
+}
+
+.obligation-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-lg);
+}
+
+.obligation-type-badge {
+  padding: 0.5rem 1rem;
+  background: var(--fintech-primary-lighter);
+  color: var(--fintech-primary-dark);
+  border-radius: var(--radius-md);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.obligation-amount {
+  font-size: var(--font-4xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: var(--space-md);
+  letter-spacing: -0.02em;
+}
+
+.obligation-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.obligation-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--gray-100);
+}
+
+.obligation-detail-row:last-child {
+  border-bottom: none;
+}
+
+.obligation-detail-label {
+  font-size: var(--font-sm);
+  color: var(--gray-600);
+  font-weight: 500;
+}
+
+.obligation-detail-value {
+  font-size: var(--font-base);
+  color: var(--gray-900);
+  font-weight: 700;
+}
+
+.obligation-progress-section {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-lg);
+  border-top: 2px solid var(--gray-100);
+}
+
+.progress-bar-wrapper {
+  margin-bottom: var(--space-sm);
+}
+
+.progress-bar-track {
+  height: 10px;
+  background: var(--gray-200);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--gradient-success);
+  border-radius: var(--radius-full);
+  transition: width var(--transition-slow);
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.progress-bar-fill.warning {
+  background: var(--gradient-warning);
+}
+
+.progress-bar-fill.danger {
+  background: var(--gradient-danger);
+}
+
+.progress-text {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--font-sm);
+  color: var(--gray-600);
+  font-weight: 600;
+}
+
+/* ========== DETALLE DE OBLIGACIÓN ========== */
+.detail-section {
+  padding: var(--space-2xl) 0;
+  background: linear-gradient(180deg, var(--gray-50) 0%, white 50%);
+  min-height: 100vh;
+  animation: fadeIn 0.4s ease-out;
+}
+
+.detail-hero {
+  background: var(--fintech-navy);
+  border-radius: var(--radius-2xl);
+  padding: var(--space-3xl) var(--space-2xl);
+  margin-bottom: var(--space-2xl);
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-xl);
+}
+
+.detail-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--gradient-primary);
+  opacity: 0.95;
+  z-index: 1;
+}
+
+.detail-hero::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -20%;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, transparent 70%);
+  border-radius: 50%;
+  z-index: 2;
+}
+
+.detail-hero-content {
+  position: relative;
+  z-index: 10;
+  color: white;
+}
+
+.detail-type-badge {
+  display: inline-flex;
+  padding: 0.5rem 1.25rem;
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: var(--blur-base);
+  border-radius: var(--radius-full);
+  font-size: var(--font-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-lg);
+}
+
+.detail-title {
+  font-size: var(--font-4xl);
+  font-weight: 800;
+  margin-bottom: var(--space-lg);
+  letter-spacing: -0.02em;
+}
+
+.detail-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-xl);
+}
+
+.detail-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.detail-meta-label {
+  font-size: var(--font-sm);
+  opacity: 0.9;
+  font-weight: 500;
+}
+
+.detail-meta-value {
+  font-size: var(--font-2xl);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* ========== MÉTRICAS FINANCIERAS PREMIUM ========== */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: var(--space-lg);
+  margin-bottom: var(--space-3xl);
+}
+
+.metric-card {
+  background: white;
+  border-radius: var(--radius-xl);
+  padding: var(--space-xl);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--gray-100);
+  transition: all var(--transition-base);
+  position: relative;
+  overflow: hidden;
+}
+
+.metric-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--gradient-primary);
+}
+
+.metric-card.metric-success::before {
+  background: var(--gradient-success);
+}
+
+.metric-card.metric-warning::before {
+  background: var(--gradient-warning);
+}
+
+.metric-card.metric-danger::before {
+  background: var(--gradient-danger);
+}
+
+.metric-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+}
+
+.metric-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-2xl);
+  margin-bottom: var(--space-md);
+  background: var(--gray-100);
+}
+
+.metric-label {
+  font-size: var(--font-sm);
+  color: var(--gray-600);
+  font-weight: 600;
+  margin-bottom: var(--space-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.metric-value {
+  font-size: var(--font-3xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  letter-spacing: -0.02em;
+}
+
+.metric-subtext {
+  margin-top: var(--space-sm);
+  font-size: var(--font-xs);
+  color: var(--gray-500);
+  font-weight: 500;
+}
+
+/* ========== PLAN DE PAGOS RESPONSIVE PREMIUM ========== */
+.payment-plan-section {
+  background: white;
+  border-radius: var(--radius-2xl);
+  padding: var(--space-2xl);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--gray-100);
+  margin-bottom: var(--space-2xl);
+}
+
+.payment-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-xl);
+  padding-bottom: var(--space-lg);
+  border-bottom: 2px solid var(--gray-200);
+}
+
+.payment-plan-title {
+  font-size: var(--font-2xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  letter-spacing: -0.02em;
+}
+
+.payment-plan-count {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.count-badge {
+  padding: 0.5rem 1rem;
+  background: var(--fintech-primary-lighter);
+  color: var(--fintech-primary);
+  border-radius: var(--radius-full);
+  font-size: var(--font-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* MÓVIL: Cards Premium */
+.payment-cards-mobile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  margin-bottom: var(--space-xl);
+  padding-bottom: var(--space-lg);
+}
+
+.payment-card-mobile {
+  background: white;
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+  border: 2px solid var(--gray-200);
+  transition: all var(--transition-base);
+  position: relative;
+  overflow: hidden;
+}
+
+.payment-card-mobile:last-child {
+  margin-bottom: var(--space-xl);
+  border-color: var(--fintech-primary);
+  box-shadow: var(--shadow-md);
+}
+
+.payment-card-mobile:last-child::after {
+  content: '↓ Última cuota';
+  position: absolute;
+  bottom: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--fintech-primary);
+  color: white;
+  padding: 0.25rem 1rem;
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  box-shadow: var(--shadow-md);
+  z-index: 10;
+}
+
+.payment-card-mobile::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 100%;
+  background: var(--gray-300);
+}
+
+.payment-card-mobile.status-paid {
+  background: var(--color-success-bg);
+  border-color: var(--color-success-border);
+}
+
+.payment-card-mobile.status-paid::before {
+  background: var(--gradient-success);
+}
+
+.payment-card-mobile.status-overdue {
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger-border);
+}
+
+.payment-card-mobile.status-overdue::before {
+  background: var(--gradient-danger);
+}
+
+.payment-card-mobile.status-pending {
+  background: white;
+  border-color: var(--gray-200);
+}
+
+.payment-card-mobile.status-pending::before {
+  background: var(--fintech-primary);
+}
+
+.payment-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-lg);
+}
+
+.payment-number {
+  font-size: var(--font-xl);
+  font-weight: 800;
+  color: var(--gray-900);
+}
+
+.payment-status-badge {
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.payment-status-badge.status-paid {
+  background: var(--color-success);
+  color: white;
+}
+
+.payment-status-badge.status-overdue {
+  background: var(--color-danger);
+  color: white;
+}
+
+.payment-status-badge.status-pending {
+  background: var(--gray-300);
+  color: var(--gray-700);
+}
+
+.payment-card-body {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-md);
+}
+
+.payment-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.payment-info-label {
+  font-size: var(--font-xs);
+  color: var(--gray-600);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.payment-info-value {
+  font-size: var(--font-lg);
+  font-weight: 700;
+  color: var(--gray-900);
+}
+
+.payment-penalty-alert {
+  grid-column: 1 / -1;
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--color-danger-bg);
+  border: 2px solid var(--color-danger-border);
+  border-radius: var(--radius-md);
+}
+
+.penalty-alert-title {
+  font-size: var(--font-sm);
+  font-weight: 700;
+  color: var(--color-danger);
+  margin-bottom: var(--space-xs);
+}
+
+.penalty-alert-text {
+  font-size: var(--font-sm);
+  color: var(--gray-700);
+  margin: 0;
+}
+
+/* Wrapper para la tabla en desktop */
+.payment-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  margin-bottom: var(--space-xl);
+}
+
+/* DESKTOP/TABLET: Tabla Premium */
+.payment-table-desktop {
+  display: none;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 700px;
+}
+
+.payment-table-desktop thead {
+  background: var(--gray-100);
+}
+
+.payment-table-desktop th {
+  padding: var(--space-md) var(--space-lg);
+  text-align: left;
+  font-size: var(--font-sm);
+  font-weight: 700;
+  color: var(--gray-700);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 2px solid var(--gray-300);
+}
+
+.payment-table-desktop th:first-child {
+  border-top-left-radius: var(--radius-md);
+}
+
+.payment-table-desktop th:last-child {
+  border-top-right-radius: var(--radius-md);
+}
+
+.payment-table-desktop tbody tr {
+  transition: all var(--transition-fast);
+  border-bottom: 1px solid var(--gray-200);
+}
+
+.payment-table-desktop tbody tr:last-child {
+  border-bottom: 3px solid var(--fintech-primary);
+  background: var(--fintech-primary-lighter);
+}
+
+.payment-table-desktop tbody tr:hover {
+  background: var(--gray-50);
+}
+
+.payment-table-desktop tbody tr:last-child:hover {
+  background: var(--fintech-primary-lighter);
+}
+
+.payment-table-desktop tbody tr.row-paid {
+  background: var(--color-success-bg);
+}
+
+.payment-table-desktop tbody tr.row-overdue {
+  background: var(--color-danger-bg);
+}
+
+.payment-table-desktop td {
+  padding: var(--space-lg);
+  font-size: var(--font-sm);
+  color: var(--gray-700);
+}
+
+.payment-table-desktop td:first-child {
+  font-weight: 800;
+  color: var(--gray-900);
+  font-size: var(--font-base);
+}
+
+.table-cell-amount {
+  font-weight: 700;
+  color: var(--gray-900);
+  font-size: var(--font-base);
+}
+
+.table-badge {
+  display: inline-flex;
+  padding: 0.375rem 0.875rem;
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.table-badge.badge-paid {
+  background: var(--color-success);
+  color: white;
+}
+
+.table-badge.badge-overdue {
+  background: var(--color-danger);
+  color: white;
+}
+
+.table-badge.badge-pending {
+  background: var(--gray-300);
+  color: var(--gray-700);
+}
+
+/* ========== INDICADOR DE FIN DE LISTA ========== */
+.payment-plan-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  margin-top: var(--space-2xl);
+  padding-top: var(--space-xl);
+}
+
+.end-line {
+  flex: 1;
+  height: 2px;
+  background: linear-gradient(90deg, var(--gray-200) 0%, var(--gray-300) 50%, var(--gray-200) 100%);
+}
+
+.end-text {
+  font-size: var(--font-sm);
+  color: var(--gray-500);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+/* ========== BOTÓN WHATSAPP EN FLUJO NORMAL ========== */
+.whatsapp-action-container {
+  margin-top: var(--space-2xl);
+  margin-bottom: var(--space-3xl);
+  animation: fadeInUp 0.5s ease-out;
+}
+
+.whatsapp-action-card {
+  background: linear-gradient(135deg, #E8F5E9 0%, #F1F8E9 100%);
+  border: 2px solid #A5D6A7;
+  border-radius: var(--radius-2xl);
+  padding: var(--space-2xl);
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-base);
+}
+
+.whatsapp-action-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+}
+
+.whatsapp-info {
+  margin-bottom: var(--space-xl);
+  text-align: center;
+}
+
+.whatsapp-title {
+  font-size: var(--font-2xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: var(--space-sm);
+  letter-spacing: -0.02em;
+}
+
+.whatsapp-subtitle {
+  font-size: var(--font-base);
+  color: var(--gray-700);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.btn-whatsapp-primary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  padding: 1.25rem 2rem;
+  background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-lg);
+  font-size: var(--font-lg);
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 24px 0 rgba(37, 211, 102, 0.4);
+  transition: all var(--transition-base);
+  letter-spacing: 0.02em;
+}
+
+.btn-whatsapp-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px 0 rgba(37, 211, 102, 0.5);
+}
+
+.btn-whatsapp-primary:active {
+  transform: translateY(0);
+}
+
+.whatsapp-icon {
+  font-size: var(--font-2xl);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+/* ========== ESTADO VACÍO Y NOTIFICACIONES ========== */
+.empty-state {
+  text-align: center;
+  padding: var(--space-3xl) var(--space-lg);
+}
+
+.empty-icon {
+  width: 120px;
+  height: 120px;
+  margin: 0 auto var(--space-xl);
+  background: var(--gray-100);
+  border-radius: var(--radius-2xl);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 4rem;
+}
+
+.empty-title {
+  font-size: var(--font-3xl);
+  font-weight: 800;
+  color: var(--gray-900);
+  margin-bottom: var(--space-md);
+}
+
+.empty-text {
+  font-size: var(--font-lg);
+  color: var(--gray-600);
+  max-width: 500px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+.grace-notice {
+  background: var(--color-info-bg);
+  border: 2px solid var(--color-info-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-xl);
+  margin-bottom: var(--space-2xl);
+  display: flex;
+  gap: var(--space-lg);
+  animation: fadeInUp 0.5s ease-out;
+}
+
+.grace-icon {
+  font-size: var(--font-3xl);
+  flex-shrink: 0;
+}
+
+.grace-content {
+  flex: 1;
+}
+
+.grace-title {
+  font-size: var(--font-lg);
+  font-weight: 700;
+  color: var(--fintech-primary);
+  margin-bottom: var(--space-sm);
+}
+
+.grace-text {
+  font-size: var(--font-base);
+  color: var(--gray-700);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ========== ANIMACIONES ========== */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* ========== RESPONSIVE BREAKPOINTS ========== */
+
+/* Móvil pequeño */
+@media (max-width: 360px) {
+  .consultation-card {
+    padding: var(--space-xl) var(--space-lg);
+  }
+  
+  .consultation-title {
+    font-size: var(--font-2xl);
+  }
+  
+  .client-logo-brand {
+    font-size: var(--font-lg);
+  }
+  
+  .client-logo-icon {
+    width: 40px;
+    height: 40px;
+  }
+  
+  .payment-plan-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-md);
+  }
+  
+  .whatsapp-action-card {
+    padding: var(--space-lg);
+  }
+  
+  .whatsapp-title {
+    font-size: var(--font-xl);
+  }
+}
+
+/* Móvil estándar */
+@media (max-width: 767px) {
+  .payment-plan-section {
+    padding: var(--space-lg);
+  }
+  
+  .payment-cards-mobile {
+    margin-bottom: var(--space-lg);
+  }
+  
+  .payment-table-wrapper {
+    display: none;
+  }
+}
+
+/* Tablet */
+@media (min-width: 768px) {
+  .payment-cards-mobile {
+    display: none;
+  }
+  
+  .payment-table-wrapper {
+    display: block;
+  }
+  
+  .payment-table-desktop {
+    display: table;
+  }
+  
+  .client-header-content {
+    padding: var(--space-xl) var(--space-2xl);
+  }
+  
+  .results-header {
+    margin-bottom: var(--space-3xl);
+  }
+  
+  .detail-hero {
+    padding: var(--space-3xl);
+  }
+  
+  .metrics-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  
+  .whatsapp-action-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2xl);
+  }
+  
+  .whatsapp-info {
+    text-align: left;
+    margin-bottom: 0;
+    flex: 1;
+  }
+  
+  .btn-whatsapp-primary {
+    width: auto;
+    min-width: 280px;
+  }
+}
+
+/* Desktop */
+@media (min-width: 1024px) {
+  .consultation-container {
+    max-width: 600px;
+  }
+  
+  .obligations-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .metrics-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  
+  .whatsapp-sticky-container {
+    padding: var(--space-xl) var(--space-2xl);
+  }
+}
+
+/* Desktop grande */
+@media (min-width: 1440px) {
+  .obligations-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* ========== UTILIDADES ========== */
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 var(--space-lg);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ========== PRINT STYLES ========== */
+@media print {
+  .client-header,
+  .btn-back,
+  .whatsapp-action-container,
+  .btn-whatsapp-primary {
+    display: none !important;
+  }
+  
+  .payment-cards-mobile {
+    display: flex !important;
+  }
+  
+  .payment-table-desktop {
+    display: none !important;
+  }
+  
+  .payment-plan-end {
+    display: none !important;
+  }
+}

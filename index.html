@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Consulta el estado de tu obligación financiera en Inversiones MG - Plataforma segura y moderna">
+  <meta name="theme-color" content="#0066FF">
+  <title>Consulta tu Estado Financiero - Inversiones MG</title>
+  
+  <!-- Estilos -->
+  <link rel="stylesheet" href="estilos/base.css">
+  <link rel="stylesheet" href="estilos/client-fintech.css">
+  
+  <!-- Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  
+  <!-- Filtro de errores de extensiones -->
+  <script>
+    // Suprimir errores de extensiones del navegador
+    window.addEventListener('error', function(e) {
+      if (e.filename && (e.filename.includes('extension://') || e.filename.includes('content.js'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        return true;
+      }
+    }, true);
+    
+    // Suprimir errores no capturados de promesas de extensiones
+    window.addEventListener('unhandledrejection', function(e) {
+      if (e.reason && e.reason.message && e.reason.message.includes('Extension context invalidated')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return true;
+      }
+    });
+    
+    // Ocultar advertencias de Supabase SES
+    const originalWarn = console.warn;
+    console.warn = function(...args) {
+      if (args[0] && typeof args[0] === 'string' && args[0].includes('SES')) {
+        return;
+      }
+      originalWarn.apply(console, args);
+    };
+  </script>
+</head>
+<body>
+  <!-- ========== HEADER PREMIUM ========== -->
+  <header class="client-header">
+    <div class="client-header-content">
+      <a href="index.html" class="client-logo">
+        <div class="client-logo-icon">MG</div>
+        <div class="client-logo-text">
+          <div class="client-logo-brand">Inversiones MG</div>
+          <div class="client-logo-tagline">Soluciones Financieras</div>
+        </div>
+      </a>
+      <a href="admin.html" class="btn-login">
+        <span>🔒</span>
+        <span>Acceso Admin</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- ========== PANTALLA DE CONSULTA - COMPLETAMENTE REDISEÑADA ========== -->
+  <section class="consultation-section" id="consultationSection">
+    <div class="consultation-container">
+      <div class="consultation-card">
+        <div class="consultation-icon">
+          💼
+        </div>
+        
+        <h1 class="consultation-title">Consulta tu estado financiero</h1>
+        <p class="consultation-subtitle">
+          Ingresa tu número de documento para visualizar todas tus obligaciones y detalles de pago
+        </p>
+        
+        <div class="consultation-trust">
+          <span class="trust-icon">🔒</span>
+          <span class="trust-text">Consulta segura · Información protegida</span>
+        </div>
+        
+        <form id="consultationForm" class="consultation-form">
+          <div class="form-group-modern">
+            <label for="documentInput" class="form-label-modern">
+              Número de documento
+            </label>
+            <div class="input-container">
+              <input 
+                type="text" 
+                id="documentInput" 
+                class="form-input-modern" 
+                placeholder="1234567890"
+                required
+                maxlength="10"
+                pattern="[0-9]*"
+                inputmode="numeric"
+                autocomplete="off"
+              >
+              <span class="input-icon">📄</span>
+            </div>
+            <span class="form-error" id="documentError"></span>
+          </div>
+          
+          <button type="submit" class="btn-consult" id="consultBtn">
+            <span class="btn-consult-content">
+              <span>Consultar ahora</span>
+            </span>
+          </button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== VISTA DE RESULTADOS - REDISEÑO PREMIUM ========== -->
+  <section class="results-section" id="resultsSection" style="display: none;">
+    <div class="results-container">
+      <div class="results-header">
+        <h2 class="results-title">Tus Obligaciones</h2>
+        <button class="btn-back" id="btnBack">
+          <span>←</span>
+          <span>Nueva consulta</span>
+        </button>
+      </div>
+
+      <!-- Información del cliente -->
+      <div id="clientInfo"></div>
+
+      <!-- Grid de obligaciones -->
+      <div class="obligations-grid" id="obligationsList"></div>
+
+      <!-- Estado vacío -->
+      <div class="empty-state" id="emptyState" style="display: none;">
+        <div class="empty-icon">📋</div>
+        <h3 class="empty-title">No hay obligaciones registradas</h3>
+        <p class="empty-text">
+          No encontramos ninguna obligación financiera asociada a este documento en nuestro sistema.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== DETALLE DE OBLIGACIÓN - REDISEÑO PREMIUM ========== -->
+  <section class="detail-section" id="detailSection" style="display: none;">
+    <div class="results-container">
+      <div class="results-header">
+        <h2 class="results-title">Detalle de Obligación</h2>
+        <button class="btn-back" id="btnBackToList">
+          <span>←</span>
+          <span>Volver a la lista</span>
+        </button>
+      </div>
+
+      <!-- Hero con información principal -->
+      <div id="detailHeader"></div>
+
+      <!-- Notificación de gracia -->
+      <div id="graceNotice" style="display: none;"></div>
+
+      <!-- Grid de métricas financieras -->
+      <div class="metrics-grid" id="summaryGrid"></div>
+
+      <!-- Plan de pagos responsive -->
+      <div class="payment-plan-section">
+        <div class="payment-plan-header">
+          <h3 class="payment-plan-title">Plan de Pagos</h3>
+          <div class="payment-plan-count">
+            <span class="count-badge" id="paymentCountBadge">0 cuotas</span>
+          </div>
+        </div>
+        
+        <!-- Vista móvil: cards -->
+        <div class="payment-cards-mobile" id="paymentCards"></div>
+        
+        <!-- Vista desktop/tablet: tabla -->
+        <div class="payment-table-wrapper">
+          <table class="payment-table-desktop">
+            <thead>
+              <tr>
+                <th>Cuota</th>
+                <th>Vencimiento</th>
+                <th>Valor</th>
+                <th>Estado</th>
+                <th>Días mora</th>
+                <th>Penalidad</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody id="paymentTableBody"></tbody>
+          </table>
+        </div>
+        
+        <!-- Indicador de fin de lista -->
+        <div class="payment-plan-end">
+          <div class="end-line"></div>
+          <span class="end-text">Fin del plan de pagos</span>
+          <div class="end-line"></div>
+        </div>
+      </div>
+
+      <!-- Botón WhatsApp en flujo normal -->
+      <div class="whatsapp-action-container">
+        <div class="whatsapp-action-card">
+          <div class="whatsapp-info">
+            <h4 class="whatsapp-title">¿Listo para pagar?</h4>
+            <p class="whatsapp-subtitle">Realiza tu pago de forma rápida y segura por WhatsApp</p>
+          </div>
+          <button class="btn-whatsapp-primary" id="btnPayWhatsapp">
+            <span class="whatsapp-icon">💬</span>
+            <span>Pagar por WhatsApp</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Toast de notificaciones -->
+  <div id="toast" style="
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: white;
+    padding: 1rem 1.5rem;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xl);
+    display: none;
+    z-index: 2000;
+    min-width: 250px;
+    animation: fadeInUp 0.3s ease-out;
+  "></div>
+
+  <!-- Scripts -->
+  <script src="scripts/config.js"></script>
+  <script src="scripts/supabaseClient.js"></script>
+  <script src="scripts/client.js"></script>
+</body>
+</html>

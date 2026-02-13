@@ -2289,6 +2289,7 @@ a.btn-danger:hover,
   height: min(85vw, 320px);
   pointer-events: none;
   z-index: 2;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .inv-scanner-corner {
@@ -2299,6 +2300,7 @@ a.btn-danger:hover,
   filter: drop-shadow(0 0 16px rgba(0, 217, 255, 0.8)) 
           drop-shadow(0 0 32px rgba(0, 217, 255, 0.4));
   animation: invScannerPulse 2s ease-in-out infinite;
+  transition: border-color 0.3s ease, filter 0.3s ease;
 }
 
 .inv-scanner-corner.top-left {

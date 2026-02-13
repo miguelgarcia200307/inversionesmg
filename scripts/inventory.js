@@ -12,6 +12,47 @@ const INVENTORY_CONFIG = {
   LOGIN_LOCKOUT_TIME: 5 * 60 * 1000, // 5 minutos
 };
 
+// ========== CONFIGURACIÓN DE SCANNER (DEBUG Y OPTIMIZACIÓN) ==========
+const SCANNER_DEBUG = localStorage.getItem('scanner_debug') === 'true' || false;
+const SCANNER_NO_DETECT_TIMEOUT = 8000; // 8 segundos sin detectar → mostrar tips
+
+/**
+ * ESTRATEGIA DE DETECCIÓN MULTI-INTENTO (FIX PROBLEMA ROI)
+ * ========================================================
+ * 
+ * PROBLEMA RESUELTO:
+ * - El ROI fijo (70%×35%) cortaba códigos grandes, códigos cerca de cámara,
+ *   o quiet zones (márgenes blancos), causando fallo de detección.
+ * 
+ * SOLUCIÓN IMPLEMENTADA:
+ * - Estrategia multi-intento: prueba 4 tamaños de ROI por frame:
+ *   1. 'full' → Frame completo (con downscale si >1280px)
+ *   2. 'centerLarge' → 90% ancho × 60% alto
+ *   3. 'centerMedium' → 80% ancho × 45% alto
+ *   4. 'centerSmall' → 70% ancho × 35% alto (último recurso)
+ * 
+ * - Preprocesamiento aplicado a AMBOS motores (nativo y ZXing):
+ *   • Escala de grises
+ *   • Aumento de contraste (30%)
+ *   • Binarización adaptativa optimizada
+ *   → CRUCIAL para códigos en pantallas
+ * 
+ * - UX mejorada:
+ *   • Tips automáticos tras 8 segundos sin detectar
+ *   • Feedback visual verde al detectar (bordes + esquinas)
+ *   • Throttling 8 FPS (balance rendimiento/precisión)
+ * 
+ * MODO DEBUG:
+ * - Activar: localStorage.setItem('scanner_debug', 'true')
+ * - Desactivar: localStorage.removeItem('scanner_debug')
+ * - Muestra en consola: modo usado, dimensiones, intentos por frame
+ * 
+ * PRUEBAS REQUERIDAS:
+ * ✓ Android Chrome: EAN13 en caja, EAN13 en pantalla
+ * ✓ iPhone Safari: EAN13 en caja (usando ZXing fallback)
+ * ✓ PC Chrome/Edge: EAN13 impreso, EAN13 en caja
+ */
+
 // ========== ESTADO GLOBAL ==========
 let currentUser = null;
 let currentView = "dashboard";
@@ -34,6 +75,8 @@ let zxingCodeReader = null;
 let zxingAnimationFrame = null;
 let availableCameras = [];
 let selectedCameraId = null;
+let scannerStartTime = 0; // Timestamp cuando inició el scanner
+let scannerTipsShown = false; // Si ya se mostraron tips
 
 // ========== ELEMENTOS DEL DOM ==========
 const loginScreen = document.getElementById("loginScreen");
@@ -2456,6 +2499,8 @@ async function openScanner() {
     
     // 4. Activar scanner
     scannerActive = true;
+    scannerStartTime = Date.now(); // Track inicio para timeout
+    scannerTipsShown = false; // Reset tips
     
     // 5. Mostrar indicador de actividad
     const activeIndicator = document.getElementById('scannerActiveIndicator');
@@ -2473,6 +2518,231 @@ async function openScanner() {
     showScannerFallback();
   }
 }
+
+// =============================================================================
+// FUNCIONES AUXILIARES PARA CAPTURA Y PREPROCESAMIENTO (ESTRATEGIA MULTI-MODO)
+// =============================================================================
+
+/**
+ * Captura frame del video al canvas según modo especificado
+ * @param {string} mode - 'full', 'centerLarge', 'centerMedium', 'centerSmall'
+ * @returns {Object} { canvas, ctx, imageData, width, height, mode }
+ */
+function captureFrameToCanvas(mode = 'full') {
+  if (!scannerVideo || !scannerCanvas) {
+    throw new Error('Scanner video o canvas no disponible');
+  }
+  
+  const videoWidth = scannerVideo.videoWidth;
+  const videoHeight = scannerVideo.videoHeight;
+  
+  if (videoWidth === 0 || videoHeight === 0) {
+    throw new Error('Video no tiene dimensiones válidas');
+  }
+  
+  let sourceX, sourceY, sourceWidth, sourceHeight;
+  let targetWidth, targetHeight;
+  
+  // Determinar ROI según modo (manteniendo quiet zones)
+  switch (mode) {
+    case 'full':
+      // Frame completo, con downscale inteligente si es muy grande
+      sourceX = 0;
+      sourceY = 0;
+      sourceWidth = videoWidth;
+      sourceHeight = videoHeight;
+      
+      // Downscale si excede 1280px para optimizar performance
+      if (videoWidth > 1280) {
+        const scale = 1280 / videoWidth;
+        targetWidth = 1280;
+        targetHeight = Math.floor(videoHeight * scale);
+      } else {
+        targetWidth = videoWidth;
+        targetHeight = videoHeight;
+      }
+      break;
+      
+    case 'centerLarge':
+      // 90% ancho × 60% alto - ROI grande con suficiente margen
+      sourceWidth = Math.floor(videoWidth * 0.90);
+      sourceHeight = Math.floor(videoHeight * 0.60);
+      sourceX = Math.floor((videoWidth - sourceWidth) / 2);
+      sourceY = Math.floor((videoHeight - sourceHeight) / 2);
+      targetWidth = sourceWidth;
+      targetHeight = sourceHeight;
+      break;
+      
+    case 'centerMedium':
+      // 80% ancho × 45% alto - ROI medio
+      sourceWidth = Math.floor(videoWidth * 0.80);
+      sourceHeight = Math.floor(videoHeight * 0.45);
+      sourceX = Math.floor((videoWidth - sourceWidth) / 2);
+      sourceY = Math.floor((videoHeight - sourceHeight) / 2);
+      targetWidth = sourceWidth;
+      targetHeight = sourceHeight;
+      break;
+      
+    case 'centerSmall':
+      // 70% ancho × 35% alto - ROI pequeño (último recurso)
+      sourceWidth = Math.floor(videoWidth * 0.70);
+      sourceHeight = Math.floor(videoHeight * 0.35);
+      sourceX = Math.floor((videoWidth - sourceWidth) / 2);
+      sourceY = Math.floor((videoHeight - sourceHeight) / 2);
+      targetWidth = sourceWidth;
+      targetHeight = sourceHeight;
+      break;
+      
+    default:
+      throw new Error(`Modo de captura inválido: ${mode}`);
+  }
+  
+  // Configurar canvas
+  scannerCanvas.width = targetWidth;
+  scannerCanvas.height = targetHeight;
+  
+  const ctx = scannerCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    throw new Error('No se pudo obtener contexto 2D del canvas');
+  }
+  
+  // Dibujar región seleccionada
+  ctx.drawImage(
+    scannerVideo,
+    sourceX, sourceY, sourceWidth, sourceHeight,
+    0, 0, targetWidth, targetHeight
+  );
+  
+  if (SCANNER_DEBUG) {
+    console.log(`📸 Captura [${mode}]: ${targetWidth}×${targetHeight} desde (${sourceX},${sourceY}) ${sourceWidth}×${sourceHeight}`);
+  }
+  
+  return {
+    canvas: scannerCanvas,
+    ctx: ctx,
+    width: targetWidth,
+    height: targetHeight,
+    mode: mode
+  };
+}
+
+/**
+ * Obtiene ImageData preprocesado desde canvas
+ * @param {CanvasRenderingContext2D} ctx - Contexto 2D del canvas
+ * @param {number} width - Ancho del canvas
+ * @param {number} height - Alto del canvas
+ * @param {boolean} applyPreprocessing - Si aplicar preprocesamiento
+ * @returns {ImageData} ImageData procesado
+ */
+function getProcessedImageDataFromCanvas(ctx, width, height, applyPreprocessing = true) {
+  let imageData = ctx.getImageData(0, 0, width, height);
+  
+  if (applyPreprocessing) {
+    imageData = preprocessImageData(imageData);
+  }
+  
+  return imageData;
+}
+
+/**
+ * Función de preprocesamiento de imagen OPTIMIZADA
+ * Aplica: escala de grises, contraste, binarización adaptativa
+ * VERSIÓN OPTIMIZADA: usa downsampling para threshold adaptativo (más rápido)
+ */
+function preprocessImageData(imageData) {
+  const data = imageData.data;
+  const width = imageData.width;
+  const height = imageData.height;
+  const length = data.length;
+  
+  // Paso 1: Convertir a escala de grises con ponderación estándar
+  for (let i = 0; i < length; i += 4) {
+    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    data[i] = data[i + 1] = data[i + 2] = gray;
+  }
+  
+  // Paso 2: Aumentar contraste
+  const contrast = 1.3;
+  const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+  
+  for (let i = 0; i < length; i += 4) {
+    data[i] = Math.min(255, Math.max(0, factor * (data[i] - 128) + 128));
+    data[i + 1] = data[i];
+    data[i + 2] = data[i];
+  }
+  
+  // Paso 3: Binarización adaptativa OPTIMIZADA
+  // Usar downsampling factor para acelerar cálculo de threshold
+  const downsample = 4; // Calcular threshold cada 4 píxeles
+  const windowSize = 15;
+  const threshold = new Float32Array(width * height);
+  
+  // Calcular threshold en grid reducido
+  for (let y = 0; y < height; y += downsample) {
+    for (let x = 0; x < width; x += downsample) {
+      let sum = 0;
+      let count = 0;
+      
+      for (let wy = Math.max(0, y - windowSize); wy < Math.min(height, y + windowSize); wy++) {
+        for (let wx = Math.max(0, x - windowSize); wx < Math.min(width, x + windowSize); wx++) {
+          const idx = (wy * width + wx) * 4;
+          sum += data[idx];
+          count++;
+        }
+      }
+      
+      const t = sum / count - 10; // -10 para ajuste
+      
+      // Propagar threshold a píxeles vecinos
+      for (let dy = 0; dy < downsample && (y + dy) < height; dy++) {
+        for (let dx = 0; dx < downsample && (x + dx) < width; dx++) {
+          threshold[(y + dy) * width + (x + dx)] = t;
+        }
+      }
+    }
+  }
+  
+  // Aplicar binarización
+  for (let i = 0; i < width * height; i++) {
+    const idx = i * 4;
+    const value = data[idx] > threshold[i] ? 255 : 0;
+    data[idx] = data[idx + 1] = data[idx + 2] = value;
+  }
+  
+  return imageData;
+}
+
+/**
+ * Muestra tips al usuario si no detecta en X segundos
+ */
+function checkAndShowScannerTips() {
+  if (scannerTipsShown || !scannerActive) return;
+  
+  const elapsed = Date.now() - scannerStartTime;
+  
+  if (elapsed > SCANNER_NO_DETECT_TIMEOUT) {
+    scannerTipsShown = true;
+    
+    if (scannerInfo) {
+      scannerInfo.innerHTML = `
+        <div style="text-align: center; font-size: 0.9em; line-height: 1.4;">
+          <strong>💡 Tips para mejor detección:</strong><br>
+          • Acerca o aleja el código<br>
+          • Evita reflejos de luz<br>
+          • Mantén el código dentro del marco<br>
+          • Asegúrate de buena iluminación
+        </div>
+      `;
+      scannerInfo.style.color = '#FFA500';
+    }
+    
+    Logger.info('⏱️ 8 segundos sin detectar - mostrando tips');
+  }
+}
+
+// =============================================================================
+// DETECCIÓN CON BARCODE DETECTOR NATIVO (ESTRATEGIA MULTI-INTENTO)
+// =============================================================================
 
 /**
  * Detección con BarcodeDetector nativo - Con canvas fallback para mejor compatibilidad
@@ -2493,6 +2763,9 @@ async function detectBarcodeNative() {
   
   lastNativeCheck = now;
   
+  // Verificar timeout y mostrar tips
+  checkAndShowScannerTips();
+  
   try {
     // Verificar que el video esté listo
     if (scannerVideo.readyState < 2 || scannerVideo.videoWidth === 0) {
@@ -2501,56 +2774,50 @@ async function detectBarcodeNative() {
     }
     
     let barcodes = [];
+    let detectedFrom = null;
     
-    // Intentar detección directa del video primero (más rápido)
-    try {
-      barcodes = await barcodeDetector.detect(scannerVideo);
-    } catch (err) {
-      // Si falla detección directa, usar canvas como fallback
-      Logger.warn("⚠️ Detección directa falló, usando canvas fallback");
-    }
+    // ESTRATEGIA MULTI-INTENTO: Probar diferentes regiones hasta detectar
+    const modes = ['full', 'centerLarge', 'centerMedium', 'centerSmall'];
     
-    // Si no detectó nada directamente, intentar con canvas (más compatible)
-    if (barcodes.length === 0 && scannerCanvas) {
-      const ctx = scannerCanvas.getContext('2d', { willReadFrequently: true });
-      
-      if (ctx) {
-        const videoWidth = scannerVideo.videoWidth;
-        const videoHeight = scannerVideo.videoHeight;
+    for (const mode of modes) {
+      try {
+        // Capturar frame según modo
+        const capture = captureFrameToCanvas(mode);
         
-        // ROI optimizado (70% x 35% del centro)
-        const roiWidth = Math.floor(videoWidth * 0.7);
-        const roiHeight = Math.floor(videoHeight * 0.35);
-        const roiX = Math.floor((videoWidth - roiWidth) / 2);
-        const roiY = Math.floor((videoHeight - roiHeight) / 2);
+        // Obtener ImageData CON preprocesamiento (mejora detección en pantallas)
+        const imageData = getProcessedImageDataFromCanvas(capture.ctx, capture.width, capture.height, true);
         
-        scannerCanvas.width = roiWidth;
-        scannerCanvas.height = roiHeight;
+        // Poner ImageData procesado de vuelta en canvas para que BarcodeDetector lo lea
+        capture.ctx.putImageData(imageData, 0, 0);
         
-        // Dibujar ROI del video
-        ctx.drawImage(
-          scannerVideo,
-          roiX, roiY, roiWidth, roiHeight,
-          0, 0, roiWidth, roiHeight
-        );
+        // Intentar detectar desde canvas procesado
+        barcodes = await barcodeDetector.detect(capture.canvas);
         
-        // Intentar detección desde canvas
-        try {
-          barcodes = await barcodeDetector.detect(scannerCanvas);
-        } catch (canvasErr) {
-          Logger.warn("⚠️ Detección desde canvas también falló");
+        if (barcodes.length > 0) {
+          detectedFrom = mode;
+          if (SCANNER_DEBUG) {
+            console.log(`✅ Detectado con modo: ${mode}`);
+          }
+          break; // Salir del loop si detectó
         }
+        
+      } catch (err) {
+        if (SCANNER_DEBUG) {
+          console.warn(`⚠️ Modo ${mode} falló:`, err.message);
+        }
+        // Continuar con siguiente modo
       }
     }
     
     // Si detectó algo, procesarlo
     if (barcodes.length > 0) {
       const code = barcodes[0].rawValue;
-      Logger.info(`✅ BarcodeDetector nativo detectó: ${code}`);
+      Logger.info(`✅ BarcodeDetector nativo detectó: ${code} [${detectedFrom}]`);
       await onBarcodeDetected(code);
       return; // Detener loop después de detección exitosa
     }
     
+    // Continuar loop si no detectó nada
     requestAnimationFrame(detectBarcodeNative);
     
   } catch (error) {
@@ -2559,68 +2826,12 @@ async function detectBarcodeNative() {
   }
 }
 
-/**
- * Función de preprocesamiento de imagen para mejorar lectura de códigos
- * Aplica: escala de grises, contraste, binarización adaptativa
- */
-function preprocessImageData(imageData) {
-  const data = imageData.data;
-  const length = data.length;
-  
-  // Paso 1: Convertir a escala de grises con ponderación estándar
-  for (let i = 0; i < length; i += 4) {
-    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-    data[i] = data[i + 1] = data[i + 2] = gray;
-  }
-  
-  // Paso 2: Aumentar contraste
-  const contrast = 1.3;
-  const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-  
-  for (let i = 0; i < length; i += 4) {
-    data[i] = Math.min(255, Math.max(0, factor * (data[i] - 128) + 128));
-    data[i + 1] = data[i];
-    data[i + 2] = data[i];
-  }
-  
-  // Paso 3: Binarización adaptativa (threshold dinámico)
-  // Calcular promedio local para threshold adaptativo
-  const width = imageData.width;
-  const height = imageData.height;
-  const threshold = [];
-  const windowSize = 15;
-  
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let sum = 0;
-      let count = 0;
-      
-      for (let wy = Math.max(0, y - windowSize); wy < Math.min(height, y + windowSize); wy++) {
-        for (let wx = Math.max(0, x - windowSize); wx < Math.min(width, x + windowSize); wx++) {
-          const idx = (wy * width + wx) * 4;
-          sum += data[idx];
-          count++;
-        }
-      }
-      
-      threshold[y * width + x] = sum / count - 10; // -10 para ajuste
-    }
-  }
-  
-  // Aplicar binarización
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const value = data[idx] > threshold[y * width + x] ? 255 : 0;
-      data[idx] = data[idx + 1] = data[idx + 2] = value;
-    }
-  }
-  
-  return imageData;
-}
+// =============================================================================
+// DETECCIÓN CON ZXING (FALLBACK PARA iOS/SAFARI - ESTRATEGIA MULTI-INTENTO)
+// =============================================================================
 
 /**
- * Detección con ZXing - Modo continuo con ImageData y ROI optimizado
+ * Detección con ZXing - Modo continuo con estrategia multi-intento
  * Este es el método MÁS ESTABLE para ZXing (especialmente iOS)
  */
 let lastZxingCheck = 0;
@@ -2639,6 +2850,9 @@ async function detectBarcodeZxingContinuous() {
   
   lastZxingCheck = now;
   
+  // Verificar timeout y mostrar tips
+  checkAndShowScannerTips();
+  
   try {
     // Verificar que el video esté REALMENTE listo
     if (scannerVideo.readyState < 2 || scannerVideo.videoWidth === 0 || scannerVideo.videoHeight === 0) {
@@ -2653,55 +2867,53 @@ async function detectBarcodeZxingContinuous() {
       return;
     }
     
-    const ctx = scannerCanvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) {
-      Logger.error("❌ No se pudo obtener contexto 2D del canvas");
-      zxingAnimationFrame = requestAnimationFrame(detectBarcodeZxingContinuous);
-      return;
+    let result = null;
+    let detectedFrom = null;
+    
+    // ESTRATEGIA MULTI-INTENTO: Probar diferentes regiones hasta detectar
+    const modes = ['full', 'centerLarge', 'centerMedium', 'centerSmall'];
+    
+    for (const mode of modes) {
+      try {
+        // Capturar frame según modo
+        const capture = captureFrameToCanvas(mode);
+        
+        // Obtener ImageData preprocesado (CLAVE para códigos en pantallas)
+        const imageData = getProcessedImageDataFromCanvas(capture.ctx, capture.width, capture.height, true);
+        
+        // Decodificar desde ImageData (más estable que decodeFromCanvas)
+        result = await zxingCodeReader.decodeFromImageData(imageData);
+        
+        if (result && (result.getText() || result.text)) {
+          detectedFrom = mode;
+          if (SCANNER_DEBUG) {
+            console.log(`✅ ZXing detectó con modo: ${mode}`);
+          }
+          break; // Salir del loop si detectó
+        }
+        
+      } catch (error) {
+        // ZXing lanza NotFoundException cuando no encuentra código (es NORMAL)
+        if (error.name !== 'NotFoundException') {
+          if (SCANNER_DEBUG) {
+            console.warn(`⚠️ ZXing modo ${mode} error:`, error.message);
+          }
+        }
+        // Continuar con siguiente modo
+      }
     }
     
-    // Dimensiones del video
-    const videoWidth = scannerVideo.videoWidth;
-    const videoHeight = scannerVideo.videoHeight;
-    
-    // ROI (Region of Interest) OPTIMIZADO - Centro para acelerar
-    // 70% ancho x 35% alto (códigos suelen estar horizontales en el centro)
-    const roiWidth = Math.floor(videoWidth * 0.7);
-    const roiHeight = Math.floor(videoHeight * 0.35);
-    const roiX = Math.floor((videoWidth - roiWidth) / 2);
-    const roiY = Math.floor((videoHeight - roiHeight) / 2);
-    
-    // Configurar canvas al tamaño del ROI
-    scannerCanvas.width = roiWidth;
-    scannerCanvas.height = roiHeight;
-    
-    // Dibujar SOLO el ROI del video en canvas
-    ctx.drawImage(
-      scannerVideo,
-      roiX, roiY, roiWidth, roiHeight,  // source (ROI del video)
-      0, 0, roiWidth, roiHeight          // destination (todo el canvas)
-    );
-    
-    // Obtener ImageData del canvas (método más compatible con ZXing)
-    let imageData = ctx.getImageData(0, 0, roiWidth, roiHeight);
-    
-    // Preprocesar imagen para mejorar detección (especialmente en pantallas)
-    imageData = preprocessImageData(imageData);
-    
-    // Decodificar desde ImageData (más estable que decodeFromCanvas)
-    const result = await zxingCodeReader.decodeFromImageData(imageData);
-    
+    // Si detectó algo, procesarlo
     if (result && (result.getText() || result.text)) {
       const code = result.getText ? result.getText() : result.text;
-      Logger.info(`✅ ZXing detectó: ${code}`);
+      Logger.info(`✅ ZXing detectó: ${code} [${detectedFrom}]`);
       await onBarcodeDetected(code);
       return; // Detener loop después de detección exitosa
     }
     
   } catch (error) {
-    // ZXing lanza NotFoundException cuando no encuentra código (es NORMAL)
+    // Solo logear errores reales (no NotFoundException)
     if (error.name !== 'NotFoundException') {
-      // Solo logear errores reales
       Logger.warn("⚠️ Error ZXing:", error.message || error.name || error);
     }
   }
@@ -2775,6 +2987,8 @@ function closeScanner() {
   stopDetectionLoop();
   
   scannerActive = false;
+  scannerStartTime = 0; // Reset timer
+  scannerTipsShown = false; // Reset tips
   
   if (scannerStream) {
     scannerStream.getTracks().forEach(track => track.stop());
@@ -2810,17 +3024,31 @@ function closeScanner() {
     activeIndicator.style.display = 'none';
   }
   
-  // Restablecer estado visual
+  // Restablecer estado visual completo
   const instructionsBox = document.getElementById('scannerInstructionsBox');
   const scannerInfo = document.getElementById('scannerInfo');
+  const overlay = document.querySelector('.inv-scanner-frame');
+  const corners = document.querySelectorAll('.inv-scanner-corner');
   
   if (instructionsBox) {
     instructionsBox.classList.remove('success');
   }
   
   if (scannerInfo) {
-    scannerInfo.textContent = "Listo para escanear";
+    scannerInfo.innerHTML = "Listo para escanear";
+    scannerInfo.style.color = '';
+    scannerInfo.style.fontWeight = '';
   }
+  
+  if (overlay) {
+    overlay.style.borderColor = '';
+    overlay.style.boxShadow = '';
+  }
+  
+  corners.forEach(corner => {
+    corner.style.borderColor = '';
+    corner.style.filter = '';
+  });
   
   lastScannedCode = null;
 }

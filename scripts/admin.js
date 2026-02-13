@@ -195,10 +195,12 @@ loginForm.addEventListener("submit", async (e) => {
   btnLogin.disabled = true;
   btnLogin.textContent = "Verificando...";
   
-  // Autenticación - Credenciales de producción
-  // Usuario: miguelgarcia / Contraseña: miguel2003
+  // Autenticación con ruteo por credenciales
+  // Créditos: miguelgarcia / miguel2003
+  // Inventarios: inventarios / inv2026
   setTimeout(() => {
     if (user === "miguelgarcia" && password === "miguel2003") {
+      // Usuario de créditos (panel actual)
       currentUser = { 
         username: user, 
         nombre: "Miguel García",
@@ -206,6 +208,20 @@ loginForm.addEventListener("submit", async (e) => {
       };
       saveSession(currentUser);
       showAdminPanel();
+    } else if (user === "inventarios" && password === "inv2026") {
+      // Usuario de inventarios - guardar sesión y redirigir
+      const inventoryUser = { 
+        username: user, 
+        nombre: "Administrador Inventarios",
+        role: "inventarios" 
+      };
+      const sessionData = {
+        user: inventoryUser,
+        expiry: Date.now() + (8 * 60 * 60 * 1000) // 8 horas
+      };
+      localStorage.setItem("inversionesmg_inventory_session", JSON.stringify(sessionData));
+      Logger.info("Sesión de inventarios guardada, redirigiendo...");
+      window.location.href = "inventarios.html";
     } else {
       loginError.textContent = "Usuario o contraseña incorrectos";
       loginError.classList.add("active");

@@ -21,9 +21,9 @@ const SCANNER_NO_DETECT_TIMEOUT = 15000; // 15 segundos sin detectar → mostrar
 const CODE_VALIDATION = {
   MIN_LENGTH: 3,                    // Mínimo 3 caracteres
   MAX_LENGTH: 50,                   // Máximo 50 caracteres
-  CONSISTENCY_CHECKS: 3,            // Número de lecturas para confirmar
-  CONSISTENCY_TIMEOUT: 1500,        // Tiempo limite para validaciones (ms)
-  VALIDATION_DELAY: 300,            // Delay entre validaciones (ms)
+  CONSISTENCY_CHECKS: 2,            // Reducido: Solo 2 lecturas para confirmar
+  CONSISTENCY_TIMEOUT: 800,         // Reducido: 800ms para validación
+  VALIDATION_DELAY: 200,            // Reducido: 200ms entre validaciones
   ALLOWED_PATTERNS: [
     /^\d+$/,                        // Solo números
     /^[A-Z0-9]+$/i,                // Alfanumérico
@@ -4831,7 +4831,7 @@ function getMostFrequentCode(buffer) {
 }
 
 /**
- * Valida consistencia de código mediante múltiples lecturas
+ * Valida consistencia de código mediante múltiples lecturas - VERSIÓN SIMPLIFICADA
  */
 async function validateCodeConsistency(code) {
   if (!isValidBarcodeFormat(code)) {
@@ -4842,8 +4842,9 @@ async function validateCodeConsistency(code) {
   // Si ya hay una validación en progreso, agregar al buffer
   if (validationInProgress) {
     codeValidationBuffer.push(code);
+    updateScannerStatusValidating(code);
     
-    // Verificar si hemos completado las validaciones
+    // Verificar si hemos completado las validaciones (simplificado)
     if (codeValidationBuffer.length >= CODE_VALIDATION.CONSISTENCY_CHECKS) {
       const result = getMostFrequentCode(codeValidationBuffer);
       const consistencyRatio = result.frequency / result.total;
@@ -4852,15 +4853,15 @@ async function validateCodeConsistency(code) {
         Logger.info(`Validación completa: ${result.code} (${result.frequency}/${result.total} = ${Math.round(consistencyRatio * 100)}%)`);
       }
       
-      // Si el 70% o más de las lecturas coinciden, considerar válido
-      if (consistencyRatio >= 0.7) {
+      // Reducido a 60% para ser menos restrictivo
+      if (consistencyRatio >= 0.6 || result.frequency >= 2) {
         resetValidation();
         return result.code;
       } else {
-        // Lecturas inconsistentes - mostrar opción de confirmación manual
-        if (SCANNER_DEBUG) Logger.warn(`Lecturas inconsistentes para código`);
+        // Si no es consistente, usar el más frecuente de todas formas
+        if (SCANNER_DEBUG) Logger.warn(`Usando código más frecuente a pesar de inconsistencias`);
         resetValidation();
-        return await showInconsistentReadDialog(codeValidationBuffer);
+        return result.code;
       }
     }
     return false; // Continuar validando
@@ -4871,21 +4872,19 @@ async function validateCodeConsistency(code) {
   validationStartTime = Date.now();
   codeValidationBuffer = [code];
   
-  // Actualizar UI para mostrar validación en progreso
   updateScannerStatusValidating(code);
   
-  // Timeout para validación
+  // Timeout más corto y menos restrictivo
   setTimeout(() => {
-    if (validationInProgress && codeValidationBuffer.length < CODE_VALIDATION.CONSISTENCY_CHECKS) {
-      if (SCANNER_DEBUG) Logger.warn("Timeout en validación - usando lectura parcial");
+    if (validationInProgress) {
+      if (SCANNER_DEBUG) Logger.warn(`Timeout en validación - usando la lectura disponible`);
       
       const result = getMostFrequentCode(codeValidationBuffer);
-      if (result.frequency >= 2) { // Al menos 2 lecturas iguales
-        resetValidation();
+      resetValidation();
+      
+      // Procesar inmediatamente el código más frecuente disponible
+      if (result.code) {
         onValidatedCode(result.code);
-      } else {
-        resetValidation();
-        showTimeoutValidationDialog(codeValidationBuffer);
       }
     }
   }, CODE_VALIDATION.CONSISTENCY_TIMEOUT);
@@ -4894,16 +4893,23 @@ async function validateCodeConsistency(code) {
 }
 
 /**
- * Resetea el sistema de validación
+ * Resetea el sistema de validación - VERSIÓN MEJORADA
  */
 function resetValidation() {
   validationInProgress = false;
   codeValidationBuffer = [];
   validationStartTime = 0;
+  
+  // Restaurar UI del scanner
+  const scannerInfo = document.getElementById('scannerInfo');
+  if (scannerInfo) {
+    scannerInfo.innerHTML = '📷 Apunta al código de barras';
+    scannerInfo.style.color = '';
+  }
 }
 
 /**
- * Actualiza la UI durante validación
+ * Actualiza la UI durante validación - VERSIÓN SIMPLIFICADA
  */
 function updateScannerStatusValidating(code) {
   const scannerInfo = document.getElementById('scannerInfo');
@@ -4912,10 +4918,10 @@ function updateScannerStatusValidating(code) {
   
   if (scannerInfo) {
     scannerInfo.innerHTML = `
-      🔍 Validando código...<br>
+      🔍 Validando: ${code.slice(0, 12)}${code.length > 12 ? '...' : ''}<br>
       <small>${codeValidationBuffer.length}/${CODE_VALIDATION.CONSISTENCY_CHECKS} lecturas</small>
-      <div style="width: 100%; background: rgba(255,255,255,0.3); border-radius: 10px; margin-top: 8px; height: 6px;">
-        <div style="width: ${percentage}%; background: #4CAF50; height: 100%; border-radius: 10px; transition: width 0.3s ease;"></div>
+      <div style="width: 100%; background: rgba(255,255,255,0.3); border-radius: 10px; margin-top: 8px; height: 4px;">
+        <div style="width: ${percentage}%; background: #4CAF50; height: 100%; border-radius: 10px; transition: width 0.2s ease;"></div>
       </div>
     `;
     scannerInfo.style.color = '#FFA726';
@@ -4923,64 +4929,47 @@ function updateScannerStatusValidating(code) {
 }
 
 /**
- * Muestra diálogo para lecturas inconsistentes
+ * Manejo simplificado para lecturas inconsistentes (eliminado el modal complejo)
  */
-async function showInconsistentReadDialog(readings) {
-  return new Promise((resolve) => {
-    const frequency = {};
-    readings.forEach(code => {
-      frequency[code] = (frequency[code] || 0) + 1;
-    });
-    
-    const codes = Object.entries(frequency)
-      .sort(([,a], [,b]) => b - a)
-      .slice(0, 3); // Top 3 códigos más frecuentes
-    
-    const options = codes.map(([code, count]) => 
-      `<button class="btn-primary" onclick="resolveInconsistent('${code}')" style="margin: 0.5rem; padding: 0.75rem;">
-        ${code}<br><small>${count} lectura${count > 1 ? 's' : ''}</small>
-      </button>`
-    ).join('');
-    
-    showModal("🔍 Lecturas Inconsistentes", `
-      <div style="text-align: center;">
-        <p>Se detectaron lecturas diferentes para el mismo código.</p>
-        <p><strong>Selecciona el código correcto:</strong></p>
-        <div style="display: flex; flex-direction: column; align-items: center;">
-          ${options}
-          <button class="btn-secondary" onclick="resolveInconsistent(null)" style="margin-top: 1rem;">
-            ❌ Cancelar y escanear de nuevo
-          </button>
-        </div>
-      </div>
-    `, '');
-    
-    window.resolveInconsistent = (selectedCode) => {
-      hideModal();
-      delete window.resolveInconsistent;
-      resolve(selectedCode);
-    };
-  });
+async function handleInconsistentReadings(readings) {
+  const result = getMostFrequentCode(readings);
+  
+  if (SCANNER_DEBUG) {
+    Logger.warn(`Lecturas inconsistentes: usando código más frecuente: ${result.code}`);
+  }
+  
+  // Usar el código más frecuente automáticamente
+  if (result.code) {
+    showToast(`⚡ Usando: "${result.code}" (lectura más frecuente)`, "warning");
+    return result.code;
+  }
+  
+  return null;
 }
 
 /**
- * Muestra diálogo para validación con timeout
+ * Función simplificada cuando no se puede validar consistencia
  */
 function showTimeoutValidationDialog(readings) {
   const result = getMostFrequentCode(readings);
   
-  if (result.frequency >= 2) {
-    showToast(`⚠️ Validación parcial: usando "${result.code}"`, "warning");
+  if (result.code && result.frequency >= 1) {
+    if (SCANNER_DEBUG) Logger.info(`Usando código más frecuente después de timeout: ${result.code}`);
+    showToast(`⚡ Procesando: "${result.code}"`, "info");
     onValidatedCode(result.code);
   } else {
+    if (SCANNER_DEBUG) Logger.warn("No se pudo validar ningún código");
     showToast("❌ No se pudo validar el código. Intenta de nuevo.", "error");
+    resetValidation();
   }
 }
 
 /**
- * Procesa un código ya validado
+ * Procesa un código ya validado - VERSIÓN SIMPLIFICADA
  */
 async function onValidatedCode(code) {
+  if (!code) return;
+  
   lastValidatedCode = code;
   lastScannedCode = code;
   lastScanTime = Date.now();
@@ -4994,12 +4983,17 @@ async function onValidatedCode(code) {
   showScannerSuccess();
   
   // Procesar según modo
-  await processScan(code);
+  try {
+    await processScan(code);
+  } catch (error) {
+    Logger.error("Error procesando código validado:", error);
+    showToast("❌ Error procesando código", "error");
+  }
   
   // Cerrar scanner después de un momento
   setTimeout(() => {
     closeScanner();
-  }, 1000);
+  }, 800);
 }
 
 /**
@@ -5039,8 +5033,8 @@ function showScannerSuccess() {
 }
 
 /**
- * Función unificada para procesar código detectado
- * Ahora con validación de consistencia
+ * Función unificada para procesar código detectado - VERSIÓN MEJORADA
+ * Ahora con validación de consistencia y respaldo
  */
 async function onBarcodeDetected(code) {
   if (!code) return;
@@ -5053,13 +5047,20 @@ async function onBarcodeDetected(code) {
   
   if (SCANNER_DEBUG) Logger.info(`🎯 Código detectado (sin validar): ${code}`);
   
-  // Validar consistencia
+  // Validar consistencia (versión simplificada)
   const validatedCode = await validateCodeConsistency(code);
   
   if (validatedCode) {
     await onValidatedCode(validatedCode);
   }
-  // Si no está validado aún, continuar escaneando
+  
+  // RESPALDO: Si la validación ha estado corriendo por más de 2 segundos, 
+  // procesar el código directamente
+  if (validationInProgress && (now - validationStartTime) > 2000) {
+    if (SCANNER_DEBUG) Logger.warn("Validación tomando demasiado tiempo - procesando directamente");
+    resetValidation();
+    await onValidatedCode(code);
+  }
 }
 
 /**

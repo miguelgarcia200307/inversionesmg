@@ -146,27 +146,31 @@ async function buscarProductoPorCodigoBarras(codigo) {
       .from("inv_codigos_barras")
       .select(`
         *,
-        producto:producto_id(
-          *,
-          inv_codigos_barras(*)
-        )
+        inv_productos!producto_id(*)
       `)
       .eq("codigo", codigo)
       .single();
 
     if (error && error.code !== "PGRST116") throw error;
     
-    // Obtener proveedor si existe
-    if (data?.producto && data.producto.proveedor_principal_id) {
-      const { data: proveedor } = await supabaseClient
-        .from("inv_proveedores")
-        .select("id,nombre")
-        .eq("id", data.producto.proveedor_principal_id)
-        .single();
-      data.producto.proveedor = proveedor;
+    // Si encontramos el código, obtener el producto completo con sus códigos
+    if (data?.inv_productos) {
+      const productoCompleto = await obtenerProductoPorId(data.inv_productos.id);
+      
+      // Obtener proveedor si existe
+      if (productoCompleto && productoCompleto.proveedor_principal_id) {
+        const { data: proveedor } = await supabaseClient
+          .from("inv_proveedores")
+          .select("id,nombre")
+          .eq("id", productoCompleto.proveedor_principal_id)
+          .single();
+        productoCompleto.proveedor = proveedor;
+      }
+      
+      return productoCompleto;
     }
     
-    return data ? data.producto : null;
+    return null;
   } catch (error) {
     Logger.error("Error al buscar producto por código:", error);
     return null;
@@ -731,6 +735,88 @@ async function registrarVenta(ventaData, items) {
 }
 
 /**
+ * Eliminar venta y revertir stock
+ * @param {number} ventaId - ID de la venta
+ * @returns {Promise<Object>}
+ */
+async function eliminarVenta(ventaId) {
+  try {
+    // 1. Obtener venta y sus items
+    const { data: venta, error: errorVenta } = await supabaseClient
+      .from("inv_ventas")
+      .select(`
+        *,
+        inv_venta_items(*)
+      `)
+      .eq("id", ventaId)
+      .single();
+
+    if (errorVenta) throw errorVenta;
+    if (!venta) throw new Error("Venta no encontrada");
+
+    // 2. Revertir stock para cada item
+    for (const item of venta.inv_venta_items) {
+      // Obtener stock actual del producto
+      const { data: producto } = await supabaseClient
+        .from("inv_productos")
+        .select("stock_actual, nombre")
+        .eq("id", item.producto_id)
+        .single();
+
+      const stockAnterior = parseFloat(producto.stock_actual);
+      const stockNuevo = stockAnterior + parseFloat(item.cantidad);
+
+      // Actualizar stock (devolver las unidades)
+      await supabaseClient
+        .from("inv_productos")
+        .update({ stock_actual: stockNuevo })
+        .eq("id", item.producto_id);
+
+      // Registrar movimiento de reversa
+      await supabaseClient
+        .from("inv_movimientos_stock")
+        .insert([{
+          producto_id: item.producto_id,
+          tipo: "ajuste",
+          cantidad: parseFloat(item.cantidad),
+          stock_anterior: stockAnterior,
+          stock_nuevo: stockNuevo,
+          referencia: `reversa_venta_${ventaId}`,
+          nota: `Stock revertido por eliminación de venta #${ventaId}`,
+        }]);
+    }
+
+    // 3. Eliminar items de venta
+    const { error: errorDeleteItems } = await supabaseClient
+      .from("inv_venta_items")
+      .delete()
+      .eq("venta_id", ventaId);
+
+    if (errorDeleteItems) throw errorDeleteItems;
+
+    // 4. Eliminar venta principal
+    const { error: errorDeleteVenta } = await supabaseClient
+      .from("inv_ventas")
+      .delete()
+      .eq("id", ventaId);
+
+    if (errorDeleteVenta) throw errorDeleteVenta;
+
+    // 5. Registrar auditoría
+    await registrarAuditoria("eliminar_venta", "venta", ventaId, {
+      total_revertido: venta.total,
+      items_count: venta.inv_venta_items.length,
+      fecha_venta_original: venta.fecha
+    });
+
+    return { success: true, data: venta };
+  } catch (error) {
+    Logger.error("Error al eliminar venta:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Obtener todas las ventas con detalles
  * @param {Object} options - Filtros opcionales
  * @returns {Promise<Array>}
@@ -1029,6 +1115,8 @@ if (typeof window !== "undefined") {
     // Ventas
     registrarVenta,
     obtenerTodasVentas,
+    eliminarVenta,
+    eliminarVenta,
     
     // Movimientos
     obtenerMovimientosProducto,

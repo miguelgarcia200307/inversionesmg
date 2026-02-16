@@ -13,7 +13,8 @@ const INVENTORY_CONFIG = {
 };
 
 // ========== CONFIGURACIÓN DE SCANNER (DEBUG Y OPTIMIZACIÓN) ==========
-const SCANNER_DEBUG = localStorage.getItem('scanner_debug') === 'true' || true; // Forzar debug temporalmente para diagnosticar
+// Configuración de debugs - Temporalmente desactivado para producción
+const SCANNER_DEBUG = localStorage.getItem('scanner_debug') === 'true' || false;
 const SCANNER_NO_DETECT_TIMEOUT = 15000; // 15 segundos sin detectar → mostrar tips (menos intrusivo)
 
 /**
@@ -58,12 +59,13 @@ let currentUser = null;
 let currentView = "dashboard";
 let productosData = [];
 let proveedoresData = [];
+let ventasData = [];
 let scannerActive = false;
 let scannerStream = null;
 let lastScannedCode = null;
 let lastScanTime = 0;
 let barcodeDetector = null;
-let scannerMode = "venta"; // 'venta', 'registro', 'asociar'
+let scannerMode = "registro"; // 'venta', 'registro', 'asociar' - Por defecto registro para inventarios
 let currentProductoForAssociation = null;
 let carritoVenta = []; // Carrito de ventas
 let loginAttempts = 0;
@@ -130,6 +132,11 @@ if (togglePassword) {
 // ========== UTILIDADES ==========
 function showToast(message, type = "info") {
   const toast = document.getElementById("toastInventory");
+  if (!toast) {
+    console.warn("Toast element not found, showing alert instead:", message);
+    alert(message);
+    return;
+  }
   toast.className = "toast";
   toast.classList.add(type);
   toast.classList.add("active");
@@ -141,6 +148,17 @@ function showToast(message, type = "info") {
 }
 
 function showModal(title, content, footer = "") {
+  const modalTitle = document.getElementById("modalTitle");
+  const modalBody = document.getElementById("modalBody");
+  const modalFooter = document.getElementById("modalFooter");
+  const modalOverlay = document.getElementById("modalOverlay");
+  
+  if (!modalTitle || !modalBody || !modalFooter || !modalOverlay) {
+    console.error("Modal elements not found in DOM");
+    alert(`${title}\n\n${content.replace(/<[^>]*>/g, '')}`);
+    return;
+  }
+  
   modalTitle.textContent = title;
   modalBody.innerHTML = content;
   modalFooter.innerHTML = footer;
@@ -148,7 +166,10 @@ function showModal(title, content, footer = "") {
 }
 
 function hideModal() {
-  modalOverlay.classList.remove("active");
+  const modalOverlay = document.getElementById("modalOverlay");
+  if (modalOverlay) {
+    modalOverlay.classList.remove("active");
+  }
 }
 
 function showLoading(container, message = "Cargando...") {
@@ -1383,6 +1404,14 @@ function openProductActions(id) {
           <div class="inv-action-list-subtitle">Aumentar o reducir inventario</div>
         </div>
       </div>
+      
+      <div class="inv-action-list-item inv-action-list-item-danger" onclick="hideModal(); confirmarEliminarProducto(${id})">
+        <div class="inv-action-list-icon">🗑️</div>
+        <div class="inv-action-list-content">
+          <div class="inv-action-list-title">Eliminar Producto</div>
+          <div class="inv-action-list-subtitle">Remover producto del inventario</div>
+        </div>
+      </div>
     </div>
   `, `
     <button type="button" class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
@@ -1453,6 +1482,9 @@ function renderProductosTable(productos) {
             </button>
             <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="adjustStock(${p.id})" title="Ajustar stock">
               📊
+            </button>
+            <button class="inv-btn inv-btn-icon inv-btn-danger" onclick="confirmarEliminarProducto(${p.id})" title="Eliminar producto">
+              🗑️
             </button>
           </div>
         </td>
@@ -1605,7 +1637,7 @@ async function loadVentas(container) {
   showLoading(container, "Cargando ventas...");
   
   try {
-    const ventas = await InventoryDB.obtenerTodasVentas();
+    ventasData = await InventoryDB.obtenerTodasVentas();
     const isMobile = window.innerWidth <= 768;
     
     if (isMobile) {
@@ -1624,7 +1656,7 @@ async function loadVentas(container) {
         </div>
         
         <div class="inv-sales-mobile-list">
-          ${ventas.length > 0 ? renderVentasCards(ventas) : `
+          ${ventasData.length > 0 ? renderVentasCards(ventasData) : `
             <div class="inv-empty-state-mobile">
               <div class="inv-empty-state-icon">💰</div>
               <div class="inv-empty-state-title">No hay ventas registradas</div>
@@ -1642,7 +1674,7 @@ async function loadVentas(container) {
       // Función de filtro para búsqueda
       window.filterVentas = function(searchTerm) {
         const term = searchTerm.toLowerCase();
-        const filtered = ventas.filter(v => 
+        const filtered = ventasData.filter(v => 
           `#${v.id}`.includes(term) ||
           formatDate(v.fecha).toLowerCase().includes(term) ||
           (v.metodo_pago && v.metodo_pago.toLowerCase().includes(term))
@@ -1764,6 +1796,9 @@ function renderVentasCards(ventas) {
         <div class="inv-sale-card-footer">
           <button class="inv-sale-action-btn primary" onclick="event.stopPropagation(); openSaleDetail(${v.id})">
             👁️ Ver Detalle
+          </button>
+          <button class="inv-sale-action-btn danger" onclick="event.stopPropagation(); confirmarEliminarVenta(${v.id})">
+            🗑️ Eliminar
           </button>
         </div>
       </div>
@@ -3467,42 +3502,55 @@ async function openQuickSale() {
         <button class="btn-primary btn-large" onclick="scannerMode='venta'; openScanner()">
           📷 Escanear Producto
         </button>
-        <p style="text-align: center; margin-top: 1rem; color: var(--gray-600);">
+        <p style="text-align: center; margin-top: 1rem; opacity: 0.8; position: relative; z-index: 1;">
           o busca manualmente
         </p>
-        <input type="search" id="searchProductoVenta" placeholder="Buscar producto..." class="form-input">
+        <input type="search" id="searchProductoVenta" placeholder="Buscar por nombre o SKU..." class="form-input">
         <div id="searchResultsVenta" class="search-results"></div>
       </div>
       
       <div class="venta-carrito-section">
-        <h4>Carrito</h4>
+        <h4>Carrito de Ventas</h4>
         <div id="carritoVentaContainer"></div>
         
         <div class="venta-totales">
           <div class="venta-total-row">
-            <span>Subtotal:</span>
+            <span>Subtotal</span>
             <span id="ventaSubtotal">$0</span>
           </div>
           <div class="venta-total-row venta-total-main">
-            <span>Total:</span>
+            <span>Total a Pagar</span>
             <span id="ventaTotal">$0</span>
           </div>
         </div>
         
         <div class="form-group">
-          <label>Método de Pago</label>
+          <label>💳 Método de Pago</label>
           <select id="ventaMetodoPago" class="form-input">
-            <option value="efectivo">Efectivo</option>
-            <option value="transferencia">Transferencia</option>
-            <option value="nequi">Nequi</option>
-            <option value="datafono">Datáfono</option>
+            <option value="efectivo">💵 Efectivo</option>
+            <option value="transferencia">🏦 Transferencia Bancaria</option>
+            <option value="nequi">📱 Nequi</option>
+            <option value="datafono">💳 Datáfono</option>
+            <option value="daviplata">💰 Daviplata</option>
+            <option value="bancolombia">🏛️ Bancolombia</option>
+            <option value="pse">🔗 PSE</option>
+            <option value="tarjeta_credito">💳 Tarjeta de Crédito</option>
+            <option value="tarjeta_debito">💳 Tarjeta de Débito</option>
+            <option value="credito_propio">🏷️ Crédito Propio</option>
+            <option value="inversiones_mg">💼 Inversiones MG</option>
+            <option value="consignacion">🏧 Consignación</option>
+            <option value="intercambio">🔄 Intercambio</option>
           </select>
         </div>
       </div>
     </div>
   `, `
-    <button type="button" class="btn-secondary" onclick="hideModal()">Cancelar</button>
+    <button type="button" class="btn-secondary" onclick="hideModal()">
+      <span style="margin-right: 0.5rem;">❌</span>
+      Cancelar
+    </button>
     <button type="button" class="btn-primary" onclick="confirmarVenta()" id="btnConfirmarVenta" disabled>
+      <span style="margin-right: 0.5rem;">✅</span>
       Confirmar Venta
     </button>
   `);
@@ -3510,30 +3558,58 @@ async function openQuickSale() {
   // Renderizar carrito vacío (ahora que el modal ya está en el DOM)
   renderCarritoVenta();
   
-  // Búsqueda de productos
+  // Búsqueda de productos con mejor UX
   const searchInput = document.getElementById("searchProductoVenta");
   const resultsContainer = document.getElementById("searchResultsVenta");
   
+  // Agregar animación de focus al input
+  searchInput.addEventListener("focus", () => {
+    searchInput.style.transform = "scale(1.02)";
+  });
+  
+  searchInput.addEventListener("blur", () => {
+    searchInput.style.transform = "scale(1)";
+  });
+  
+  let searchTimeout;
   searchInput.addEventListener("input", async (e) => {
     const query = e.target.value.toLowerCase();
+    
+    // Debounce para mejor performance
+    clearTimeout(searchTimeout);
+    
     if (query.length < 2) {
       resultsContainer.innerHTML = '';
       return;
     }
     
-    const productos = await InventoryDB.obtenerTodosProductos({ activo: true });
-    const filtered = productos.filter(p => 
-      p.nombre?.toLowerCase().includes(query) ||
-      p.sku?.toLowerCase().includes(query)
-    ).slice(0, 5);
+    // Mostrar indicador de carga
+    resultsContainer.innerHTML = '<div style="text-align: center; padding: 1rem; color: rgba(255,255,255,0.7);">🔍 Buscando...</div>';
     
-    resultsContainer.innerHTML = filtered.map(p => `
-      <div class="search-result-item" onclick="agregarAlCarritoVenta(${JSON.stringify(p).replace(/"/g, '&quot;')})">
-        <strong>${p.nombre}</strong>
-        <span>${p.sku} - Stock: ${p.stock_actual}</span>
-        <span>${formatCurrency(p.precio_sugerido)}</span>
-      </div>
-    `).join('');
+    searchTimeout = setTimeout(async () => {
+      try {
+        const productos = await InventoryDB.obtenerTodosProductos({ activo: true });
+        const filtered = productos.filter(p => 
+          p.nombre?.toLowerCase().includes(query) ||
+          p.sku?.toLowerCase().includes(query)
+        ).slice(0, 5);
+        
+        if (filtered.length === 0) {
+          resultsContainer.innerHTML = '<div style="text-align: center; padding: 1rem; color: rgba(255,255,255,0.7);">📭 Sin resultados</div>';
+          return;
+        }
+        
+        resultsContainer.innerHTML = filtered.map((p, index) => `
+          <div class="search-result-item" onclick="agregarAlCarritoVenta(${JSON.stringify(p).replace(/"/g, '&quot;')})" style="animation-delay: ${index * 0.1}s">
+            <strong>${p.nombre}</strong>
+            <span>SKU: ${p.sku} | Stock: ${p.stock_actual} unidades</span>
+            <span style="font-weight: 600; color: var(--inv-primary);">${formatCurrency(p.precio_sugerido)}</span>
+          </div>
+        `).join('');
+      } catch (error) {
+        resultsContainer.innerHTML = '<div style="text-align: center; padding: 1rem; color: rgba(255,255,255,0.7);">❌ Error en búsqueda</div>';
+      }
+    }, 300);
   });
 }
 
@@ -3541,7 +3617,12 @@ function agregarAlCarritoVenta(producto) {
   const existing = carritoVenta.find(item => item.producto_id === producto.id);
   
   if (existing) {
+    if (existing.cantidad >= producto.stock_actual) {
+      showToast(`⚠️ Stock máximo alcanzado (${producto.stock_actual} unidades)`, "warning");
+      return;
+    }
     existing.cantidad++;
+    showToast(`📈 ${producto.nombre} aumentado a ${existing.cantidad} unidades`, "success");
   } else {
     carritoVenta.push({
       producto_id: producto.id,
@@ -3553,11 +3634,26 @@ function agregarAlCarritoVenta(producto) {
       cantidad: 1,
       stock_disponible: producto.stock_actual,
     });
+    showToast(`✅ ${producto.nombre} agregado al carrito`, "success");
   }
   
+  // Limpiar búsqueda
+  const searchInput = document.getElementById("searchProductoVenta");
+  const resultsContainer = document.getElementById("searchResultsVenta");
+  if (searchInput) searchInput.value = '';
+  if (resultsContainer) resultsContainer.innerHTML = '';
+  
   renderCarritoVenta();
-  vibrate();
-  showToast(`${producto.nombre} agregado al carrito`, "success");
+  vibrate([50, 30, 50]); // Patrón de vibración para feedback táctil
+  
+  // Animación del botón de confirmación
+  const btnConfirmar = document.getElementById("btnConfirmarVenta");
+  if (btnConfirmar) {
+    btnConfirmar.style.transform = 'scale(1.05)';
+    setTimeout(() => {
+      btnConfirmar.style.transform = 'scale(1)';
+    }, 200);
+  }
 }
 
 function renderCarritoVenta() {
@@ -3571,44 +3667,120 @@ function renderCarritoVenta() {
   }
   
   if (carritoVenta.length === 0) {
-    container.innerHTML = '<p style="text-align: center; color: var(--gray-500);">Carrito vacío</p>';
-    if (btnConfirmar) btnConfirmar.disabled = true;
+    container.innerHTML = '<p>El carrito está vacío<br>¡Agrega productos para comenzar!</p>';
+    if (btnConfirmar) {
+      btnConfirmar.disabled = true;
+      btnConfirmar.style.opacity = '0.6';
+      btnConfirmar.style.transform = 'scale(0.95)';
+    }
     return;
   }
   
   container.innerHTML = carritoVenta.map((item, index) => `
-    <div class="carrito-item">
+    <div class="carrito-item" data-index="${index}">
       <div class="carrito-item-info">
         <strong>${item.nombre}</strong>
         <small>${item.sku}</small>
       </div>
+      
       <div class="carrito-item-controls">
-        <button class="btn-icon-sm" onclick="cambiarCantidadCarrito(${index}, -1)">−</button>
-        <input type="number" value="${item.cantidad}" min="1" max="${item.stock_disponible}" 
-               onchange="actualizarCantidadCarrito(${index}, this.value)" class="carrito-cantidad-input">
-        <button class="btn-icon-sm" onclick="cambiarCantidadCarrito(${index}, 1)">+</button>
+        <div class="carrito-cantidad-section">
+          <button class="btn-icon-sm" onclick="cambiarCantidadCarrito(${index}, -1)" title="Reducir cantidad">
+            <span style="line-height: 1;">−</span>
+          </button>
+          <input type="number" 
+                 value="${item.cantidad}" 
+                 min="1" 
+                 max="${item.stock_disponible}" 
+                 onchange="actualizarCantidadCarrito(${index}, this.value)" 
+                 class="carrito-cantidad-input"
+                 title="Cantidad">
+          <button class="btn-icon-sm" onclick="cambiarCantidadCarrito(${index}, 1)" title="Aumentar cantidad">
+            <span style="line-height: 1;">+</span>
+          </button>
+        </div>
+        
+        <div class="carrito-stock-info" style="font-size: 0.75rem; color: var(--inv-text-tertiary); text-align: center;">
+          Stock: ${item.stock_disponible}
+        </div>
       </div>
+      
       <div class="carrito-item-price">
-        <input type="number" value="${item.precio_real}" step="0.01" min="0"
-               onchange="actualizarPrecioCarrito(${index}, this.value)" class="carrito-precio-input">
-        <button class="btn-icon-sm btn-danger" onclick="eliminarDeCarrito(${index})">🗑️</button>
+        <input type="number" 
+               value="${item.precio_real}" 
+               step="0.01" 
+               min="0"
+               onchange="actualizarPrecioCarrito(${index}, this.value)" 
+               class="carrito-precio-input"
+               placeholder="Precio unitario"
+               title="Precio unitario">
+        <button class="btn-icon-sm btn-danger" 
+                onclick="eliminarDeCarrito(${index})" 
+                title="Eliminar producto">
+          🗑️
+        </button>
+      </div>
+      
+      <div class="carrito-item-subtotal" style="text-align: right; margin-top: var(--inv-space-2); font-weight: 600; color: var(--inv-primary);">
+        Subtotal: ${formatCurrency(item.precio_real * item.cantidad)}
       </div>
     </div>
   `).join('');
   
+  // Animar entrada de items
+  setTimeout(() => {
+    const items = container.querySelectorAll('.carrito-item');
+    items.forEach((item, index) => {
+      item.style.animationDelay = `${index * 0.1}s`;
+    });
+  }, 10);
+  
   actualizarTotalesVenta();
-  if (btnConfirmar) btnConfirmar.disabled = false;
+  
+  if (btnConfirmar) {
+    btnConfirmar.disabled = false;
+    btnConfirmar.style.opacity = '1';
+    btnConfirmar.style.transform = 'scale(1)';
+    
+    // Agregar efecto de pulso sutil al botón cuando hay items
+    btnConfirmar.style.animation = 'pulse 2s infinite';
+  }
 }
 
 function cambiarCantidadCarrito(index, delta) {
   const item = carritoVenta[index];
   const nuevaCantidad = item.cantidad + delta;
   
-  if (nuevaCantidad > 0 && nuevaCantidad <= item.stock_disponible) {
-    item.cantidad = nuevaCantidad;
-    renderCarritoVenta();
-  } else if (nuevaCantidad > item.stock_disponible) {
-    showToast("Stock insuficiente", "warning");
+  if (nuevaCantidad <= 0) {
+    // Si la cantidad llega a 0, confirmar eliminación
+    if (confirm(`¿Eliminar "${item.nombre}" del carrito?`)) {
+      eliminarDeCarrito(index);
+    }
+    return;
+  }
+  
+  if (nuevaCantidad > item.stock_disponible) {
+    showToast(`⚠️ Stock insuficiente. Máximo: ${item.stock_disponible} unidades`, "warning");
+    vibrate([100, 50, 100]);
+    
+    // Animación de "shake" para indicar error
+    const itemElement = document.querySelector(`[data-index="${index}"]`);
+    if (itemElement) {
+      itemElement.style.animation = 'shake 0.5s ease-in-out';
+      setTimeout(() => {
+        itemElement.style.animation = '';
+      }, 500);
+    }
+    return;
+  }
+  
+  item.cantidad = nuevaCantidad;
+  renderCarritoVenta();
+  vibrate(50); // Vibración suave para feedback
+  
+  // Mostrar toast solo para cambios significativos
+  if (Math.abs(delta) > 1 || nuevaCantidad % 5 === 0) {
+    showToast(`📊 ${item.nombre}: ${nuevaCantidad} unidades`, "info");
   }
 }
 
@@ -3616,32 +3788,137 @@ function actualizarCantidadCarrito(index, valor) {
   const cantidad = parseInt(valor);
   const item = carritoVenta[index];
   
-  if (cantidad > 0 && cantidad <= item.stock_disponible) {
-    item.cantidad = cantidad;
+  if (isNaN(cantidad) || cantidad < 1) {
+    showToast("⚠️ Cantidad debe ser mayor a 0", "warning");
     renderCarritoVenta();
-  } else {
-    showToast("Cantidad inválida", "warning");
+    return;
+  }
+  
+  if (cantidad > item.stock_disponible) {
+    showToast(`⚠️ Stock insuficiente. Máximo: ${item.stock_disponible} unidades`, "warning");
     renderCarritoVenta();
+    return;
+  }
+  
+  const cantidadAnterior = item.cantidad;
+  item.cantidad = cantidad;
+  
+  renderCarritoVenta();
+  
+  if (cantidad !== cantidadAnterior) {
+    vibrate(30);
+    showToast(`📊 Cantidad actualizada: ${cantidad} unidades`, "success");
   }
 }
 
 function actualizarPrecioCarrito(index, valor) {
   const precio = parseFloat(valor);
-  if (precio >= 0) {
-    carritoVenta[index].precio_real = precio;
-    actualizarTotalesVenta();
+  const item = carritoVenta[index];
+  
+  if (isNaN(precio) || precio < 0) {
+    showToast("⚠️ Precio debe ser mayor o igual a 0", "warning");
+    renderCarritoVenta();
+    return;
+  }
+  
+  const precioAnterior = item.precio_real;
+  item.precio_real = precio;
+  
+  actualizarTotalesVenta();
+  
+  // Actualizar solo el subtotal del item sin renderizar todo
+  const itemElement = document.querySelector(`[data-index="${index}"] .carrito-item-subtotal`);
+  if (itemElement) {
+    itemElement.textContent = `Subtotal: ${formatCurrency(precio * item.cantidad)}`;
+    
+    // Animación para destacar el cambio
+    itemElement.style.background = 'var(--inv-success-light)';
+    itemElement.style.borderRadius = 'var(--inv-radius-md)';
+    itemElement.style.padding = '0.25rem 0.5rem';
+    
+    setTimeout(() => {
+      itemElement.style.background = '';
+      itemElement.style.borderRadius = '';
+      itemElement.style.padding = '';
+    }, 1000);
+  }
+  
+  if (precio !== precioAnterior) {
+    vibrate(30);
+    const diferencia = precio - precioAnterior;
+    const icono = diferencia > 0 ? '📈' : '📉';
+    showToast(`${icono} Precio actualizado: ${formatCurrency(precio)}`, "info");
   }
 }
 
 function eliminarDeCarrito(index) {
-  carritoVenta.splice(index, 1);
-  renderCarritoVenta();
+  const item = carritoVenta[index];
+  const itemElement = document.querySelector(`[data-index="${index}"]`);
+  
+  // Animación de salida
+  if (itemElement) {
+    itemElement.style.transform = 'translateX(-100%)';
+    itemElement.style.opacity = '0';
+    itemElement.style.transition = 'all 0.3s ease-out';
+  }
+  
+  setTimeout(() => {
+    carritoVenta.splice(index, 1);
+    renderCarritoVenta();
+    showToast(`🗑️ "${item.nombre}" eliminado del carrito`, "info");
+    vibrate(100);
+  }, 300);
 }
 
 function actualizarTotalesVenta() {
   const subtotal = carritoVenta.reduce((sum, item) => sum + (item.precio_real * item.cantidad), 0);
-  document.getElementById("ventaSubtotal").textContent = formatCurrency(subtotal);
-  document.getElementById("ventaTotal").textContent = formatCurrency(subtotal);
+  
+  const subtotalElement = document.getElementById("ventaSubtotal");
+  const totalElement = document.getElementById("ventaTotal");
+  
+  if (subtotalElement && totalElement) {
+    // Animación de actualización de números
+    const oldSubtotal = subtotalElement.textContent;
+    const oldTotal = totalElement.textContent;
+    
+    const newSubtotalText = formatCurrency(subtotal);
+    const newTotalText = formatCurrency(subtotal);
+    
+    if (oldSubtotal !== newSubtotalText) {
+      // Efecto de "flip" para los números
+      subtotalElement.style.transform = 'rotateX(90deg)';
+      totalElement.style.transform = 'rotateX(90deg)';
+      
+      setTimeout(() => {
+        subtotalElement.textContent = newSubtotalText;
+        totalElement.textContent = newTotalText;
+        
+        subtotalElement.style.transform = 'rotateX(0deg)';
+        totalElement.style.transform = 'rotateX(0deg)';
+      }, 150);
+      
+      // Agregar clase temporal para destacar el cambio
+      const totalesContainer = document.querySelector('.venta-totales');
+      if (totalesContainer) {
+        totalesContainer.style.animation = 'pulse 0.6s ease-out';
+        setTimeout(() => {
+          totalesContainer.style.animation = '';
+        }, 600);
+      }
+    }
+  }
+  
+  // Actualizar contador de items en el título del carrito
+  const carritoTitle = document.querySelector('.venta-carrito-section h4');
+  if (carritoTitle) {
+    const totalItems = carritoVenta.reduce((sum, item) => sum + item.cantidad, 0);
+    const baseTitle = "Carrito de Ventas";
+    if (totalItems > 0) {
+      carritoTitle.innerHTML = `🛒 ${baseTitle} <span style="background: var(--inv-primary); color: white; padding: 0.25rem 0.5rem; border-radius: var(--inv-radius-full); font-size: 0.8rem; margin-left: 0.5rem;">${totalItems}</span>`;
+    } else {
+      carritoTitle.innerHTML = `🛒 ${baseTitle}`;
+    }
+  }
 }
 
 async function confirmarVenta() {
@@ -5206,7 +5483,9 @@ async function detectBarcodeZxingContinuous() {
           }
         } catch (e) {
           if (e.name !== 'NotFoundException') {
-            console.warn('ZXing decode error:', e);
+            if (SCANNER_DEBUG) {
+              console.warn('ZXing decode error:', e);
+            }
             throw e;
           }
         }
@@ -5232,7 +5511,9 @@ async function detectBarcodeZxingContinuous() {
           }
         } catch (e) {
           if (e.name !== 'NotFoundException') {
-            console.warn('ZXing decode light error:', e);
+            if (SCANNER_DEBUG) {
+              console.warn('ZXing decode light error:', e);
+            }
             throw e;
           }
         }
@@ -5258,7 +5539,9 @@ async function detectBarcodeZxingContinuous() {
           }
         } catch (e) {
           if (e.name !== 'NotFoundException') {
-            console.warn('ZXing decode full error:', e);
+            if (SCANNER_DEBUG) {
+              console.warn('ZXing decode full error:', e);
+            }
             throw e;
           }
         }
@@ -5267,7 +5550,9 @@ async function detectBarcodeZxingContinuous() {
         // ZXing lanza NotFoundException cuando no encuentra código (es NORMAL)
         if (error.name !== 'NotFoundException') {
           if (SCANNER_DEBUG) {
-            console.warn(`⚠️ ZXing modo ${mode} error:`, error.message);
+            if (SCANNER_DEBUG) {
+          console.warn(`⚠️ ZXing modo ${mode} error:`, error.message);
+        }
           }
         }
         // Continuar con siguiente modo
@@ -5323,9 +5608,12 @@ async function processScan(codigo) {
   } else if (scannerMode === "registro") {
     if (producto) {
       showScanSuccess();
-      showToast(`ℹ️ Código ya asociado a: ${producto.nombre}`, "info");
+      showToast(`📦 Producto encontrado: ${producto.nombre}`, "success");
       closeScanner();
-      setTimeout(() => viewProducto(producto.id), 500);
+      // Mostrar modal con información del producto y opciones
+      setTimeout(() => {
+        showProductoEncontradoModal(producto, codigo);
+      }, 100);
     } else {
       showScanSuccess();
       closeScanner();
@@ -5391,6 +5679,345 @@ async function processScan(codigo) {
 }
 
 // =============================================================================
+/**
+ * Mostrar modal cuando se encuentra un producto asociado al código
+ */
+function showProductoEncontradoModal(producto, codigo) {
+  showModal(`📦 Producto Encontrado`, `
+    <div class="inv-codigo-display">
+      <div class="inv-codigo-escaneado">
+        <span class="inv-codigo-label">Código escaneado:</span>
+        <span class="inv-codigo-valor">${codigo}</span>
+      </div>
+      <div class="inv-alert inv-alert-info">
+        ✅ Este código pertenece a un producto registrado
+      </div>
+    </div>
+    
+    <div class="inv-producto-info-card">
+      <div class="inv-producto-header">
+        <h3>${producto.nombre}</h3>
+        <span class="inv-producto-sku">${producto.sku || 'Sin SKU'}</span>
+      </div>
+      
+      <div class="inv-producto-detalles">
+        <div class="inv-detalle-item">
+          <span class="inv-detalle-label">Stock actual:</span>
+          <span class="inv-detalle-valor">${producto.stock_actual || 0} unidades</span>
+        </div>
+        
+        ${producto.categoria ? `
+          <div class="inv-detalle-item">
+            <span class="inv-detalle-label">Categoría:</span>
+            <span class="inv-detalle-valor">${producto.categoria}</span>
+          </div>
+        ` : ''}
+        
+        ${producto.marca ? `
+          <div class="inv-detalle-item">
+            <span class="inv-detalle-label">Marca:</span>
+            <span class="inv-detalle-valor">${producto.marca}</span>
+          </div>
+        ` : ''}
+        
+        ${producto.precio_sugerido ? `
+          <div class="inv-detalle-item">
+            <span class="inv-detalle-label">Precio sugerido:</span>
+            <span class="inv-detalle-valor">$${parseFloat(producto.precio_sugerido).toLocaleString()}</span>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+    
+    <div class="inv-opciones-codigo">
+      <div class="inv-opciones-grid">
+        <button class="inv-opcion-btn primary" onclick="incrementarStockProducto(${producto.id}, '${codigo}')">
+          <div class="inv-opcion-icon">📈</div>
+          <div class="inv-opcion-text">
+            <strong>Incrementar Stock</strong>
+            <small>Agregar +1 unidad al inventario</small>
+          </div>
+        </button>
+        
+        <button class="inv-opcion-btn secondary" onclick="hideModal(); viewProducto(${producto.id})">
+          <div class="inv-opcion-icon">👁️</div>
+          <div class="inv-opcion-text">
+            <strong>Ver Detalles Completos</strong>
+            <small>Información completa del producto</small>
+          </div>
+        </button>
+      </div>
+    </div>
+  `, `
+    <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+  `);
+}
+
+/**
+ * Incrementar stock de producto desde escaner
+ */
+async function incrementarStockProducto(productoId, codigo) {
+  try {
+    showModal("📈 Incrementando Stock", `
+      <div style="text-align: center; padding: 2rem;">
+        <div class="loading-spinner"></div>
+        <p>Incrementando stock del producto...</p>
+      </div>
+    `);
+    
+    const result = await InventoryDB.ajustarStock(productoId, 1, `Stock incrementado vía escáner - Código: ${codigo}`);
+    
+    if (result.success) {
+      hideModal();
+      showToast(`✅ Stock incrementado - Nuevo stock: ${result.data.stock_nuevo}`, "success");
+      
+      // Recargar vista actual si es necesario
+      const currentView = document.querySelector('.inv-view.active')?.id;
+      if (currentView) {
+        loadView(currentView.replace('view', ''));
+      }
+    } else {
+      showModal("❌ Error", `
+        <div class="inv-error-display">
+          <p><strong>No se pudo incrementar el stock:</strong></p>
+          <p class="error-detail">${result.error || 'Error desconocido'}</p>
+        </div>
+      `, `
+        <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+        <button class="inv-btn inv-btn-primary" onclick="incrementarStockProducto(${productoId}, '${codigo}')">Reintentar</button>
+      `);
+    }
+    
+  } catch (error) {
+    Logger.error("Error al incrementar stock:", error);
+    showModal("❌ Error de Sistema", `
+      <div class="inv-error-display">
+        <p><strong>Error técnico:</strong></p>
+        <p class="error-detail">${error.message}</p>
+      </div>
+    `, `
+      <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+    `);
+  }
+}
+
+/**
+ * Confirmar eliminación de producto con modal
+ */
+function confirmarEliminarProducto(id) {
+  const producto = productosData.find(p => p.id === id);
+  if (!producto) {
+    showToast("Producto no encontrado", "error");
+    return;
+  }
+  
+  showModal(`⚠️ Confirmar Eliminación`, `
+    <div class="inv-confirmacion-eliminar">
+      <div class="inv-producto-eliminar-info">
+        <div class="inv-producto-eliminar-icon">📦</div>
+        <div class="inv-producto-eliminar-detalles">
+          <h4>${producto.nombre}</h4>
+          <p><strong>SKU:</strong> ${producto.sku || 'Sin SKU'}</p>
+          <p><strong>Stock actual:</strong> ${producto.stock_actual} unidades</p>
+          ${producto.categoria ? `<p><strong>Categoría:</strong> ${producto.categoria}</p>` : ''}
+        </div>
+      </div>
+      
+      <div class="inv-confirmacion-mensaje">
+        <p><strong>¿Estás seguro de que deseas eliminar este producto?</strong></p>
+        <p class="inv-advertencia-texto">
+          ⚠️ Esta acción desactivará el producto del inventario. 
+          El producto no aparecerá en las listas pero se mantendrán 
+          sus registros históricos.
+        </p>
+      </div>
+    </div>
+  `, `
+    <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
+    <button class="inv-btn inv-btn-danger" onclick="eliminarProducto(${id})">Sí, Eliminar</button>
+  `);
+}
+
+/**
+ * Eliminar producto definitivamente
+ */
+async function eliminarProducto(id) {
+  try {
+    const producto = productosData.find(p => p.id === id);
+    if (!producto) {
+      showToast("Producto no encontrado", "error");
+      return;
+    }
+    
+    // Mostrar loading
+    showModal("🗑️ Eliminando Producto", `
+      <div style="text-align: center; padding: 2rem;">
+        <div class="loading-spinner"></div>
+        <p>Eliminando <strong>${producto.nombre}</strong>...</p>
+      </div>
+    `);
+    
+    const result = await InventoryDB.eliminarProducto(id);
+    
+    if (result.success) {
+      hideModal();
+      showToast(`✅ Producto "${producto.nombre}" eliminado correctamente`, "success");
+      
+      // Recargar la vista actual de productos
+      const currentView = document.querySelector('.inv-view.active')?.id;
+      if (currentView === 'productosview') {
+        loadView('productos');
+      } else {
+        // Si estamos en otra vista, solo actualizemos los datos globales
+        productosData = await InventoryDB.obtenerTodosProductos({ activo: true });
+      }
+      
+    } else {
+      showModal("❌ Error al Eliminar", `
+        <div class="inv-error-display">
+          <p><strong>No se pudo eliminar el producto:</strong></p>
+          <p class="error-detail">${result.error || 'Error desconocido'}</p>
+        </div>
+      `, `
+        <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+        <button class="inv-btn inv-btn-primary" onclick="eliminarProducto(${id})">Reintentar</button>
+      `);
+      
+      showToast(result.error || "Error al eliminar producto", "error");
+    }
+    
+  } catch (error) {
+    Logger.error("Error al eliminar producto:", error);
+    
+    showModal("❌ Error de Sistema", `
+      <div class="inv-error-display">
+        <p><strong>Error técnico:</strong></p>
+        <p class="error-detail">${error.message}</p>
+      </div>
+    `, `
+      <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+    `);
+    
+    showToast("Error de conexión al eliminar producto", "error");
+  }
+}
+
+/**
+ * Confirmar eliminación de venta con modal
+ */
+function confirmarEliminarVenta(id) {
+  // Buscar la venta en los datos cargados
+  const venta = ventasData.find(v => v.id === id);
+  if (!venta) {
+    showToast("Venta no encontrada", "error");
+    return;
+  }
+  
+  const itemsCount = venta.inv_venta_items?.length || 0;
+  const fecha = new Date(venta.fecha).toLocaleDateString('es-CO', { 
+    day: '2-digit', 
+    month: 'short', 
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+  
+  showModal(`⚠️ Confirmar Eliminación de Venta`, `
+    <div class="inv-confirmacion-eliminar">
+      <div class="inv-venta-eliminar-info">
+        <div class="inv-venta-eliminar-icon">🧾</div>
+        <div class="inv-venta-eliminar-detalles">
+          <h4>Venta #${venta.id}</h4>
+          <p><strong>Fecha:</strong> ${fecha}</p>
+          <p><strong>Total:</strong> ${formatCurrency(venta.total)}</p>
+          <p><strong>Productos:</strong> ${itemsCount} ${itemsCount === 1 ? 'producto' : 'productos'}</p>
+          ${venta.metodo_pago ? `<p><strong>Método de pago:</strong> ${venta.metodo_pago}</p>` : ''}
+        </div>
+      </div>
+      
+      <div class="inv-confirmacion-mensaje">
+        <p><strong>¿Estás seguro de que deseas eliminar esta venta?</strong></p>
+        <p class="inv-advertencia-texto">
+          ⚠️ <strong>Esta acción:</strong><br>
+          • Eliminará permanentemente la venta del sistema<br>
+          • Revertirá el stock de todos los productos vendidos<br>
+          • No se puede deshacer una vez realizada
+        </p>
+      </div>
+    </div>
+  `, `
+    <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
+    <button class="inv-btn inv-btn-danger" onclick="eliminarVenta(${id})">Sí, Eliminar Venta</button>
+  `);
+}
+
+/**
+ * Eliminar venta definitivamente
+ */
+async function eliminarVenta(id) {
+  try {
+    const venta = ventasData.find(v => v.id === id);
+    if (!venta) {
+      showToast("Venta no encontrada", "error");
+      return;
+    }
+    
+    // Mostrar loading
+    showModal("🗑️ Eliminando Venta", `
+      <div style="text-align: center; padding: 2rem;">
+        <div class="loading-spinner"></div>
+        <p>Eliminando venta #${venta.id} y revirtiendo stock...</p>
+        <small>Esto puede tomar unos momentos</small>
+      </div>
+    `);
+    
+    const result = await InventoryDB.eliminarVenta(id);
+    
+    if (result.success) {
+      hideModal();
+      showToast(`✅ Venta #${venta.id} eliminada y stock revertido correctamente`, "success");
+      
+      // Recargar la vista actual de ventas
+      const currentView = document.querySelector('.inv-view.active')?.id;
+      if (currentView === 'ventasview') {
+        loadView('ventas');
+      } else {
+        // Actualizar datos globales si estamos en otra vista
+        ventasData = await InventoryDB.obtenerTodasVentas();
+        productosData = await InventoryDB.obtenerTodosProductos({ activo: true });
+      }
+      
+    } else {
+      showModal("❌ Error al Eliminar", `
+        <div class="inv-error-display">
+          <p><strong>No se pudo eliminar la venta:</strong></p>
+          <p class="error-detail">${result.error || 'Error desconocido'}</p>
+        </div>
+      `, `
+        <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+        <button class="inv-btn inv-btn-primary" onclick="eliminarVenta(${id})">Reintentar</button>
+      `);
+      
+      showToast(result.error || "Error al eliminar venta", "error");
+    }
+    
+  } catch (error) {
+    Logger.error("Error al eliminar venta:", error);
+    
+    showModal("❌ Error de Sistema", `
+      <div class="inv-error-display">
+        <p><strong>Error técnico:</strong></p>
+        <p class="error-detail">${error.message}</p>
+        <p><small>La venta no fue eliminada</small></p>
+      </div>
+    `, `
+      <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+    `);
+    
+    showToast("Error de conexión al eliminar venta", "error");
+  }
+}
+
 // MODALES Y FLUJO MEJORADO PARA CÓDIGOS NO REGISTRADOS
 // =============================================================================
 
@@ -5577,7 +6204,6 @@ async function procesarCreacionProductoRapido(formData) {
       
       if (codigoResult.success) {
         hideModal();
-        hideLoading();
         showToast(`✅ Producto "${productoData.nombre}" creado y código asociado`, "success");
         
         // Recargar vista de productos
@@ -5590,9 +6216,13 @@ async function procesarCreacionProductoRapido(formData) {
     }
     
   } catch (error) {
-    hideLoading();
     Logger.error("Error al crear producto rápido:", error);
     showToast("Error: " + error.message, "error");
+    // Recargar vista actual si hay error
+    const currentView = document.querySelector('.inv-view.active')?.id;
+    if (currentView) {
+      loadView(currentView.replace('view', ''));
+    }
   }
 }
 
@@ -5603,11 +6233,27 @@ async function mostrarProductosParaAsociar(codigo) {
   hideModal();
   
   try {
-    showLoading(document.body, "Cargando productos...");
+    // Mostrar modal de carga sin destruir el DOM
+    showModal("🔍 Cargando Productos", `
+      <div style="text-align: center; padding: 2rem;">
+        <div class="loading-spinner"></div>
+        <p>Cargando productos disponibles...</p>
+      </div>
+    `);
+    
+    Logger.info("Buscando productos para asociar código:", codigo);
     const productos = await InventoryDB.obtenerTodosProductos();
-    hideLoading();
+    Logger.info(`Encontrados ${productos.length} productos`);
     
     if (productos.length === 0) {
+      // Mostrar mensaje de no hay productos
+      document.body.innerHTML = `
+        <div style="text-align: center; padding: 3rem;">
+          <h3>No hay productos registrados</h3>
+          <p>Crea un producto primero antes de asociar códigos.</p>
+          <button class="inv-btn inv-btn-primary" onclick="crearProductoRapido('${codigo}')">Crear Producto</button>
+        </div>
+      `;
       showToast("No hay productos registrados. Crea uno primero.", "info");
       setTimeout(() => crearProductoRapido(codigo), 500);
       return;
@@ -5646,21 +6292,40 @@ async function mostrarProductosParaAsociar(codigo) {
       <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
     `);
     
-    // Funcionalidad de búsqueda
-    document.getElementById('buscarProductoAsociar').addEventListener('input', (e) => {
-      const filtro = e.target.value.toLowerCase();
-      const cards = document.querySelectorAll('.inv-producto-card');
-      
-      cards.forEach(card => {
-        const texto = card.textContent.toLowerCase();
-        card.style.display = texto.includes(filtro) ? 'flex' : 'none';
+    // Funcionalidad de búsqueda - con validación
+    const buscarInput = document.getElementById('buscarProductoAsociar');
+    if (buscarInput) {
+      buscarInput.addEventListener('input', (e) => {
+        const filtro = e.target.value.toLowerCase();
+        const cards = document.querySelectorAll('.inv-producto-card');
+        
+        cards.forEach(card => {
+          const texto = card.textContent.toLowerCase();
+          card.style.display = texto.includes(filtro) ? 'flex' : 'none';
+        });
       });
-    });
+    } else {
+      Logger.warn("Elemento de búsqueda no encontrado, continuando sin filtro");
+    }
     
   } catch (error) {
-    hideLoading();
-    Logger.error("Error al cargar productos:", error);
-    showToast("Error al cargar productos: " + error.message, "error");
+    Logger.error("Error al cargar productos para asociar:", error);
+    Logger.error("Stack trace:", error.stack);
+    
+    // Mostrar error específico al usuario
+    const errorMessage = error.message || "Error desconocido";
+    showModal("⚠️ Error al Cargar Productos", `
+      <div class="inv-error-display">
+        <p><strong>No se pudieron cargar los productos:</strong></p>
+        <p class="error-detail">${errorMessage}</p>
+        <p><small>Verifica tu conexión a internet e intenta de nuevo.</small></p>
+      </div>
+    `, `
+      <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+      <button class="inv-btn inv-btn-primary" onclick="mostrarProductosParaAsociar('${codigo}')">Reintentar</button>
+    `);
+    
+    showToast("Error al cargar productos. Verifica tu conexión.", "error");
   }
 }
 
@@ -5669,13 +6334,20 @@ async function mostrarProductosParaAsociar(codigo) {
  */
 async function asociarCodigoAProducto(codigo, productoId) {
   try {
-    showLoading(document.body, "Asociando código...");
+    // Mostrar estado de carga en el modal actual
+    showModal("🔗 Asociando Código", `
+      <div style="text-align: center; padding: 2rem;">
+        <div class="loading-spinner"></div>
+        <p>Asociando código <strong>${codigo}</strong> al producto...</p>
+      </div>
+    `);
     
+    Logger.info(`Asociando código ${codigo} al producto ${productoId}`);
     const result = await InventoryDB.asociarCodigoBarrasEIncrementarStock(productoId, codigo);
+    Logger.info("Resultado de asociación:", result);
     
     if (result.success) {
       hideModal();
-      hideLoading();
       showToast(`✅ Código asociado - Nuevo stock: ${result.nuevoStock}`, "success");
       
       // Recargar vista actual
@@ -5684,13 +6356,41 @@ async function asociarCodigoAProducto(codigo, productoId) {
         loadView(currentView.replace('view', ''));
       }
     } else {
-      throw new Error(result.error || 'Error al asociar código');
+      // Error específico del negocio
+      const errorMsg = result.error || "Error al asociar código";
+      Logger.warn("Error en asociación:", errorMsg);
+      
+      showModal("⚠️ Error al Asociar Código", `
+        <div class="inv-error-display">
+          <p><strong>No se pudo asociar el código:</strong></p>
+          <p class="error-detail">${errorMsg}</p>
+        </div>
+      `, `
+        <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+        <button class="inv-btn inv-btn-primary" onclick="mostrarProductosParaAsociar('${codigo}')">Elegir Otro Producto</button>
+      `);
+      
+      showToast(errorMsg, "error");
     }
     
   } catch (error) {
-    hideLoading();
-    Logger.error("Error al asociar código:", error);
-    showToast("Error: " + error.message, "error");
+    // Error técnico/de red
+    Logger.error("Error técnico al asociar código:", error);
+    Logger.error("Stack trace:", error.stack);
+    
+    const errorMessage = error.message || "Error de conexión";
+    showModal("❌ Error de Sistema", `
+      <div class="inv-error-display">
+        <p><strong>Error técnico al asociar código:</strong></p>
+        <p class="error-detail">${errorMessage}</p>
+        <p><small>Verifica tu conexión e intenta de nuevo.</small></p>
+      </div>
+    `, `
+      <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cerrar</button>
+      <button class="inv-btn inv-btn-primary" onclick="asociarCodigoAProducto('${codigo}', ${productoId})">Reintentar</button>
+    `);
+    
+    showToast("Error de conexión al asociar código", "error");
   }
 }
 
@@ -6330,9 +7030,8 @@ async function viewCompra(id) {
   } catch (error) {
     Logger.error("Error al cargar detalle de compra:", error);
     showToast("Error al cargar el detalle de la compra", "error");
-  } finally {
-    hideLoading();
   }
+  // No es necesario hideLoading() porque showModal reemplaza el contenido
 }
 
 async function editProveedor(id) {

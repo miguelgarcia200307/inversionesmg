@@ -15,7 +15,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   
   <!-- ZXing - Librería de escaneo de códigos de barras (fallback) -->
-  <script src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
+  <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
   
   <!-- Filtro de errores de extensiones -->
   <script>
@@ -178,10 +178,8 @@
     <main class="admin-main">
       <!-- Topbar -->
       <div class="admin-topbar">
-        <button class="topbar-menu" id="btnMenu" aria-label="Menú">
-          <span></span>
-          <span></span>
-          <span></span>
+        <button class="topbar-menu-btn" id="btnMenu" aria-label="Menú">
+          ☰
         </button>
         
         <h1 class="topbar-title" id="topbarTitle">Dashboard</h1>
@@ -216,7 +214,7 @@
     <nav class="mobile-nav">
       <button class="mobile-nav-item active" data-view="dashboard">
         <span class="mobile-nav-icon">📊</span>
-        <span class="mobile-nav-label">Dashboard</span>
+        <span class="mobile-nav-label">Inicio</span>
       </button>
       <button class="mobile-nav-item" data-view="productos">
         <span class="mobile-nav-icon">📦</span>
@@ -226,9 +224,9 @@
         <span class="mobile-nav-icon">💰</span>
         <span class="mobile-nav-label">Ventas</span>
       </button>
-      <button class="mobile-nav-item" data-view="scanner" id="btnQuickScan">
+      <button class="mobile-nav-item" onclick="openScanner()">
         <span class="mobile-nav-icon">📷</span>
-        <span class="mobile-nav-label">Escanear</span>
+        <span class="mobile-nav-label">Scanner</span>
       </button>
     </nav>
   </div>
@@ -245,54 +243,205 @@
     </div>
   </div>
 
-  <!-- Scanner Overlay Futurista -->
+  <!-- Scanner Overlay Ultra-Moderno -->
   <div class="inv-scanner-overlay" id="scannerOverlay" style="display: none;">
+    <!-- Header con status bar nativo -->
     <div class="inv-scanner-header">
-      <div class="inv-scanner-title" id="scannerTitle">Escanear Código</div>
-      <button class="inv-scanner-close-btn" id="scannerClose" aria-label="Cerrar scanner">✕</button>
+      <div class="inv-scanner-status-bar">
+        <div class="inv-scanner-status-left">
+          <div class="inv-scanner-connection-indicator"></div>
+          <span class="inv-scanner-mode-indicator" id="scannerModeIndicator">ESCANEO</span>
+        </div>
+        <div class="inv-scanner-status-center">
+          <div class="inv-scanner-brand">✨ ScannerPro</div>
+        </div>
+        <div class="inv-scanner-status-right">
+          <div class="inv-scanner-battery-indicator">🔋</div>
+        </div>
+      </div>
+      
+      <div class="inv-scanner-nav">
+        <button class="inv-scanner-back-btn" id="scannerClose" aria-label="Cerrar scanner">
+          <span class="inv-back-icon">←</span>
+          <span class="inv-back-text">Volver</span>
+        </button>
+        
+        <div class="inv-scanner-title-container">
+          <h1 class="inv-scanner-title" id="scannerTitle">Cámara</h1>
+          <p class="inv-scanner-subtitle">Escanear código de barras</p>
+        </div>
+        
+        <div class="inv-scanner-actions">
+          <button class="inv-scanner-info-btn" id="scannerInfoBtn" aria-label="Información">
+            <span>ℹ</span>
+          </button>
+        </div>
+      </div>
     </div>
     
+    <!-- Viewport principal -->
     <div class="inv-scanner-viewport">
       <video id="scannerVideo" autoplay playsinline muted webkit-playsinline></video>
       <canvas id="scannerCanvas" style="display: none;"></canvas>
       
-      <!-- Indicador de grabación activa -->
-      <div class="inv-scanner-active-indicator" style="display: none;" id="scannerActiveIndicator">
-        Escaneando
+      <!-- Loading state -->
+      <div class="inv-scanner-loading" id="scannerLoading" style="display: none;">
+        <div class="inv-scanner-loading-animation">
+          <div class="inv-loading-rings">
+            <div class="inv-loading-ring"></div>
+            <div class="inv-loading-ring"></div>
+            <div class="inv-loading-ring"></div>
+          </div>
+          <div class="inv-scanner-loading-text">Iniciando cámara...</div>
+        </div>
       </div>
       
-      <!-- Marco de escaneo nativo moderno -->
-      <div class="inv-scanner-frame">
-        <div class="inv-scanner-corner top-left"></div>
-        <div class="inv-scanner-corner top-right"></div>
-        <div class="inv-scanner-corner bottom-left"></div>
-        <div class="inv-scanner-corner bottom-right"></div>
-        <div class="inv-scanner-line"></div>
+      <!-- Marco de escaneo moderno con animaciones -->
+      <div class="inv-scanner-frame" id="scannerFrame">
+        <div class="inv-scanner-corners">
+          <div class="inv-scanner-corner top-left">
+            <div class="inv-corner-inner"></div>
+          </div>
+          <div class="inv-scanner-corner top-right">
+            <div class="inv-corner-inner"></div>
+          </div>
+          <div class="inv-scanner-corner bottom-left">
+            <div class="inv-corner-inner"></div>
+          </div>
+          <div class="inv-scanner-corner bottom-right">
+            <div class="inv-corner-inner"></div>
+          </div>
+        </div>
+        
+        <!-- Línea de escaneo mejorada -->
+        <div class="inv-scanner-line-container">
+          <div class="inv-scanner-line">
+            <div class="inv-line-glow"></div>
+          </div>
+        </div>
+        
+        <!-- Indicador de zona activa -->
+        <div class="inv-scanner-zone-indicator">
+          <div class="inv-zone-pulse"></div>
+        </div>
       </div>
       
-      <!-- Instrucciones -->
-      <div class="inv-scanner-instructions" id="scannerInstructionsBox">
-        <div class="inv-scanner-instructions-title" id="scannerInfo">Listo para escanear</div>
-        <div class="inv-scanner-instructions-text">Centra el código de barras dentro del marco</div>
+      <!-- Instrucciones flotantes -->
+      <div class="inv-scanner-instructions-floating" id="scannerInstructionsBox">
+        <div class="inv-instructions-card">
+          <div class="inv-instructions-icon">📱</div>
+          <div class="inv-instructions-content">
+            <div class="inv-scanner-instructions-title" id="scannerInfo">Mantén el código en el marco</div>
+            <div class="inv-scanner-instructions-text">Asegúrate de que haya buena iluminación</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Tips emergentes -->
+      <div class="inv-scanner-tips" id="scannerTips" style="display: none;">
+        <div class="inv-tips-card">
+          <div class="inv-tips-header">
+            <span class="inv-tips-icon">💡</span>
+            <span class="inv-tips-title">Consejos de escaneo</span>
+          </div>
+          <div class="inv-tips-list">
+            <div class="inv-tip-item">• Mantén el código bien iluminado</div>
+            <div class="inv-tip-item">• Asegúrate de que esté enfocado</div>
+            <div class="inv-tip-item">• Mantén una distancia de 10-30cm</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Estado de éxito -->
+      <div class="inv-scanner-success" id="scannerSuccess" style="display: none;">
+        <div class="inv-success-animation">
+          <div class="inv-success-circle">
+            <div class="inv-success-checkmark">
+              <div class="inv-checkmark-stem"></div>
+              <div class="inv-checkmark-kick"></div>
+            </div>
+          </div>
+          <div class="inv-success-text">¡Código detectado!</div>
+        </div>
       </div>
     </div>
     
+    <!-- Controles inferiores tipo app nativa -->
     <div class="inv-scanner-controls">
-      <select id="cameraSelect" class="inv-form-input" style="display: none; flex: 1; max-width: 200px; margin: 0 8px;">
-        <option value="">Seleccionar cámara...</option>
-      </select>
-      <button id="scannerToggleFlash" class="inv-btn" style="display: none;">
-        🔦 Linterna
-      </button>
-      <button id="scannerManualInput" class="inv-btn">
-        ⌨️ Ingresar Manualmente
-      </button>
+      <div class="inv-scanner-controls-top">
+        <!-- Selector de cámara mejorado -->
+        <div class="inv-camera-selector" id="cameraSelectorContainer" style="display: none;">
+          <button class="inv-camera-toggle" id="cameraToggleBtn">
+            <span class="inv-camera-icon">📷</span>
+            <span class="inv-camera-text">Cambiar cámara</span>
+          </button>
+          <select id="cameraSelect" class="inv-camera-select">
+            <option value="">Seleccionar cámara...</option>
+          </select>
+        </div>
+        
+        <!-- Indicador de estado activo -->
+        <div class="inv-scanner-active-indicator" id="scannerActiveIndicator" style="display: none;">
+          <div class="inv-active-dot"></div>
+          <span class="inv-active-text">Escaneando...</span>
+          <div class="inv-active-waves">
+            <div class="inv-wave"></div>
+            <div class="inv-wave"></div>
+            <div class="inv-wave"></div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Botones de acción principales -->
+      <div class="inv-scanner-action-bar">
+        <button class="inv-scanner-action-btn secondary" id="scannerManualInput">
+          <div class="inv-action-btn-content">
+            <span class="inv-action-icon">⌨️</span>
+            <span class="inv-action-text">Manual</span>
+          </div>
+        </button>
+        
+        <button class="inv-scanner-main-action" id="scannerMainAction">
+          <div class="inv-main-action-bg"></div>
+          <div class="inv-main-action-content">
+            <span class="inv-main-action-icon">🔍</span>
+          </div>
+          <div class="inv-main-action-pulse"></div>
+        </button>
+        
+        <button class="inv-scanner-action-btn secondary" id="scannerToggleFlash" style="display: none;">
+          <div class="inv-action-btn-content">
+            <span class="inv-action-icon">🔦</span>
+            <span class="inv-action-text">Flash</span>
+          </div>
+        </button>
+      </div>
     </div>
     
-    <div class="scanner-fallback" id="scannerFallback" style="display: none;">
-      <p>📱 Tu dispositivo no soporta escaneo automático</p>
-      <input type="text" id="manualBarcodeInput" placeholder="Ingresa el código manualmente" class="inv-form-input">
-      <button id="btnManualBarcodeSubmit" class="inv-btn inv-btn-primary">Buscar Producto</button>
+    <!-- Fallback mejorado -->
+    <div class="inv-scanner-fallback" id="scannerFallback" style="display: none;">
+      <div class="inv-fallback-container">
+        <div class="inv-fallback-header">
+          <div class="inv-fallback-icon">📝</div>
+          <h3 class="inv-fallback-title">Entrada Manual</h3>
+          <p class="inv-fallback-subtitle">Tu dispositivo no soporta escaneo automático</p>
+        </div>
+        
+        <div class="inv-fallback-form">
+          <div class="inv-input-group">
+            <label class="inv-input-label">Código de barras</label>
+            <div class="inv-input-container">
+              <input type="text" id="manualBarcodeInput" placeholder="Ingresa el código..." class="inv-manual-input">
+              <button class="inv-input-clear" id="clearManualInput" style="display: none;">✕</button>
+            </div>
+          </div>
+          
+          <button id="btnManualBarcodeSubmit" class="inv-fallback-submit">
+            <span class="inv-submit-icon">🔍</span>
+            <span class="inv-submit-text">Buscar Producto</span>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 

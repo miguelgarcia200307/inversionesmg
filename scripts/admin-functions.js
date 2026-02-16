@@ -1717,6 +1717,57 @@ async function obtenerClientesRecientesFallback() {
   }
 }
 
+/**
+ * Limpia el localStorage de clientes que ya no existen en la DB
+ */
+async function limpiarClientesRecientesEliminados() {
+  try {
+    const clientesLocal = getClientesRecientes();
+    if (clientesLocal.length === 0) return;
+    
+    // Validar cada cliente contra la DB (silenciar errores individuales)
+    const clientesValidados = await Promise.all(
+      clientesLocal.map(async (c) => {
+        try {
+          const existe = await obtenerClientePorId(c.id);
+          return existe ? c : null;
+        } catch (err) {
+          // Cliente no accesible, considerarlo eliminado
+          return null;
+        }
+      })
+    );
+    
+    // Filtrar los que existen
+    const clientesActuales = clientesValidados.filter(c => c !== null);
+    
+    // Actualizar localStorage solo con los que existen
+    if (clientesActuales.length !== clientesLocal.length) {
+      localStorage.setItem('pagos_clientes_recientes', JSON.stringify(clientesActuales));
+      const eliminados = clientesLocal.length - clientesActuales.length;
+      if (eliminados > 0) {
+        console.log(`🧹 Limpiados ${eliminados} clientes eliminados del historial`);
+      }
+    }
+  } catch (error) {
+    // Error general, no interrumpir el flujo
+    console.warn('No se pudo limpiar historial de clientes:', error.message);
+  }
+}
+
+/**
+ * Remueve un cliente específico del localStorage de recientes
+ */
+function removerClienteReciente(clienteId) {
+  try {
+    let recientes = getClientesRecientes();
+    recientes = recientes.filter(c => c.id !== clienteId);
+    localStorage.setItem('pagos_clientes_recientes', JSON.stringify(recientes));
+  } catch (error) {
+    console.error('Error al remover cliente reciente:', error);
+  }
+}
+
 async function obtenerCuotasProximas7Dias() {
   try {
     const hoy = new Date();
@@ -1837,9 +1888,739 @@ function mostrarFormularioPagoCliente(clienteId) {
   mostrarFormularioPago(clienteId);
 }
 
-function verHistorialCliente(clienteId) {
-  // TODO: Implementar vista de historial de pagos
-  showToast("Función en desarrollo", "info");
+/**
+ * Toggle preview de comprobante inline
+ */
+function toggleComprobantePreview(previewId, url = null, tipo = 'imagen') {
+  const preview = document.getElementById(previewId);
+  const content = document.getElementById(`preview-content-${previewId.replace('preview-', '')}`);
+  
+  if (!preview) return;
+  
+  // Toggle visibility
+  const isActive = preview.classList.contains('active');
+  
+  if (isActive) {
+    preview.classList.remove('active');
+  } else {
+    preview.classList.add('active');
+    
+    // Cargar contenido solo la primera vez
+    if (content && !content.innerHTML && url) {
+      const esPDF = tipo === 'pdf' || url.toLowerCase().includes('.pdf');
+      
+      if (esPDF) {
+        content.innerHTML = `<iframe src="${url}" title="Comprobante PDF"></iframe>`;
+      } else {
+        content.innerHTML = `<img src="${url}" alt="Comprobante de pago" loading="lazy">`;
+      }
+    }
+  }
+}
+
+async function verHistorialCliente(clienteId) {
+  try {
+    // Asegurar que el ID sea un número entero
+    const idCliente = parseInt(clienteId, 10);
+    if (isNaN(idCliente)) {
+      showToast("ID de cliente inválido", "error");
+      return;
+    }
+
+    // Obtener datos del cliente
+    const cliente = await obtenerClientePorId(idCliente);
+
+    if (!cliente) {
+      showToast("Cliente no encontrado", "error");
+      return;
+    }
+
+    // Obtener obligaciones del cliente
+    const obligaciones = await obtenerObligacionesBasicasCliente(idCliente);
+
+    if (!obligaciones || obligaciones.length === 0) {
+      showModal(
+        `📋 Historial de Pagos - ${cliente.nombre}`,
+        `
+          <div class="alert alert-info">
+            <p><strong>${cliente.nombre}</strong> no tiene obligaciones registradas.</p>
+          </div>
+        `,
+        `<button class="btn btn-secondary" onclick="hideModal()">Cerrar</button>`
+      );
+      return;
+    }
+
+    const obligacionIds = obligaciones.map(o => o.id);
+
+    // Obtener todos los pagos del cliente
+    const resultPagos = await obtenerPagosCliente(idCliente);
+    
+    if (!resultPagos.success) {
+      showToast("Error al cargar pagos", "error");
+      return;
+    }
+    
+    const pagos = resultPagos.pagos;
+    
+    // Generar URLs firmadas para comprobantes
+    for (const pago of pagos) {
+      if (pago.soporte_path && !pago.soporte_url) {
+        const urlFirmada = await obtenerUrlComprobante(pago.soporte_path);
+        if (urlFirmada) {
+          pago.soporte_url = urlFirmada;
+        }
+      }
+    }
+
+    // Organizar pagos por obligación
+    const pagosPorObligacion = {};
+    obligaciones.forEach(obl => {
+      pagosPorObligacion[obl.id] = {
+        obligacion: obl,
+        pagos: pagos.filter(p => p.cuotas.obligacion_id === obl.id)
+      };
+    });
+
+    // Calcular totales
+    const totalPagado = pagos.reduce((sum, p) => sum + parseFloat(p.monto), 0);
+    const totalObligaciones = obligaciones.reduce((sum, o) => sum + parseFloat(o.capital), 0);
+    const porcentajePagado = totalObligaciones > 0 ? (totalPagado / totalObligaciones * 100) : 0;
+    const saldoPendiente = totalObligaciones - totalPagado;
+
+    // Renderizar historial con diseño premium tipo app nativa
+    const contenido = `
+      <style>
+        .historial-modal-premium {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        .historial-header {
+          background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+          padding: 32px 24px;
+          margin: -24px -24px 24px -24px;
+          border-radius: 12px 12px 0 0;
+          color: white;
+        }
+        
+        .historial-avatar {
+          width: 72px;
+          height: 72px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 32px;
+          font-weight: 700;
+          margin-bottom: 16px;
+          border: 3px solid rgba(255,255,255,0.15);
+          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+        }
+        
+        .historial-cliente-nombre {
+          font-size: 24px;
+          font-weight: 700;
+          margin: 0 0 8px 0;
+          color: white;
+          text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .historial-cliente-info {
+          font-size: 14px;
+          opacity: 0.95;
+          display: flex;
+          gap: 16px;
+          flex-wrap: wrap;
+        }
+        
+        .historial-cliente-info span {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        
+        .historial-kpi-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 16px;
+          margin-bottom: 32px;
+        }
+        
+        .historial-kpi-card {
+          background: white;
+          border-radius: 12px;
+          padding: 20px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+          border: 1px solid #e5e7eb;
+          transition: all 0.2s ease;
+        }
+        
+        .historial-kpi-card:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 8px rgba(0,0,0,0.12);
+          border-color: #d1d5db;
+        }
+        
+        .historial-kpi-icon {
+          width: 48px;
+          height: 48px;
+          border-radius: 10px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 24px;
+          margin-bottom: 12px;
+        }
+        
+        .historial-kpi-icon.success {
+          background: #d1fae5;
+          color: #065f46;
+        }
+        
+        .historial-kpi-icon.primary {
+          background: #dbeafe;
+          color: #1e40af;
+        }
+        
+        .historial-kpi-icon.warning {
+          background: #fef3c7;
+          color: #92400e;
+        }
+        
+        .historial-kpi-value {
+          font-size: 28px;
+          font-weight: 700;
+          color: #1f2937;
+          margin-bottom: 4px;
+        }
+        
+        .historial-kpi-label {
+          font-size: 13px;
+          color: #6b7280;
+          font-weight: 500;
+        }
+        
+        .historial-progress {
+          width: 100%;
+          height: 8px;
+          background: #e5e7eb;
+          border-radius: 999px;
+          overflow: hidden;
+          margin-top: 8px;
+        }
+        
+        .historial-progress-fill {
+          height: 100%;
+          background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+          border-radius: 999px;
+          transition: width 1s ease-out;
+        }
+        
+        .historial-obligacion {
+          background: white;
+          border-radius: 12px;
+          overflow: hidden;
+          margin-bottom: 24px;
+          border: 1px solid #e5e7eb;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+          transition: all 0.3s ease;
+        }
+        
+        .historial-obligacion:hover {
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+          border-color: #d1d5db;
+        }
+        
+        .historial-obl-header {
+          background: #f9fafb;
+          padding: 20px 24px;
+          border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .historial-obl-title {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+        
+        .historial-obl-icon {
+          width: 40px;
+          height: 40px;
+          border-radius: 10px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 20px;
+          background: white;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+        }
+        
+        .historial-obl-name {
+          flex: 1;
+          font-size: 18px;
+          font-weight: 600;
+          color: #111827;
+        }
+        
+        .historial-obl-stats {
+          display: flex;
+          gap: 24px;
+          margin-top: 12px;
+        }
+        
+        .historial-obl-stat {
+          flex: 1;
+        }
+        
+        .historial-obl-stat-label {
+          font-size: 12px;
+          color: #6b7280;
+          margin-bottom: 4px;
+          font-weight: 500;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        
+        .historial-obl-stat-value {
+          font-size: 18px;
+          font-weight: 700;
+          color: #1f2937;
+        }
+        
+        .historial-timeline {
+          padding: 24px;
+        }
+        
+        .historial-timeline-item {
+          display: flex;
+          gap: 16px;
+          padding-bottom: 24px;
+          position: relative;
+        }
+        
+        .historial-timeline-item:not(:last-child)::before {
+          content: '';
+          position: absolute;
+          left: 19px;
+          top: 48px;
+          bottom: 0;
+          width: 2px;
+          background: linear-gradient(180deg, #e5e7eb 0%, transparent 100%);
+        }
+        
+        .historial-timeline-marker {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          background: #10b981;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 18px;
+          flex-shrink: 0;
+          box-shadow: 0 2px 4px rgba(16, 185, 129, 0.2);
+          position: relative;
+          z-index: 1;
+        }
+        
+        .historial-timeline-content {
+          flex: 1;
+          background: #f9fafb;
+          border-radius: 12px;
+          padding: 16px;
+          border: 1px solid #e5e7eb;
+        }
+        
+        .historial-timeline-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          margin-bottom: 12px;
+        }
+        
+        .historial-timeline-date {
+          font-size: 14px;
+          font-weight: 600;
+          color: #1f2937;
+        }
+        
+        .historial-timeline-amount {
+          font-size: 20px;
+          font-weight: 700;
+          color: #10b981;
+        }
+        
+        .historial-timeline-details {
+          display: flex;
+          gap: 16px;
+          flex-wrap: wrap;
+          font-size: 13px;
+          color: #6b7280;
+        }
+        
+        .historial-timeline-detail {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        
+        .historial-timeline-detail strong {
+          color: #1f2937;
+        }
+        
+        .historial-metodo-icon {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 12px;
+          background: white;
+          border-radius: 6px;
+          font-weight: 500;
+          color: #374151;
+          border: 1px solid #e5e7eb;
+        }
+        
+        .historial-comprobante-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 14px;
+          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+          color: white;
+          border-radius: 8px;
+          font-weight: 600;
+          font-size: 13px;
+          text-decoration: none;
+          border: none;
+          box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2);
+          transition: all 0.2s ease;
+          cursor: pointer;
+        }
+        
+        .historial-comprobante-btn:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
+          background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+        }
+        
+        .historial-comprobante-btn:active {
+          transform: translateY(0);
+        }
+        
+        .historial-comprobante-preview {
+          margin-top: 12px;
+          padding: 12px;
+          background: white;
+          border-radius: 8px;
+          border: 1px solid #e5e7eb;
+          display: none;
+        }
+        
+        .historial-comprobante-preview.active {
+          display: block;
+          animation: slideDown 0.3s ease-out;
+        }
+        
+        .historial-preview-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 12px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .historial-preview-title {
+          font-size: 13px;
+          font-weight: 600;
+          color: #374151;
+        }
+        
+        .historial-preview-actions {
+          display: flex;
+          gap: 8px;
+        }
+        
+        .historial-preview-btn {
+          padding: 4px 10px;
+          font-size: 12px;
+          border-radius: 6px;
+          border: 1px solid #d1d5db;
+          background: white;
+          color: #374151;
+          cursor: pointer;
+          transition: all 0.2s;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+        
+        .historial-preview-btn:hover {
+          background: #f3f4f6;
+          border-color: #9ca3af;
+        }
+        
+        .historial-preview-content {
+          max-height: 400px;
+          overflow: auto;
+          border-radius: 6px;
+          background: #f9fafb;
+        }
+        
+        .historial-preview-content img {
+          width: 100%;
+          height: auto;
+          display: block;
+          border-radius: 6px;
+        }
+        
+        .historial-preview-content iframe {
+          width: 100%;
+          height: 400px;
+          border: none;
+          border-radius: 6px;
+        }
+        
+        @keyframes slideDown {
+          from {
+            opacity: 0;
+            transform: translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        .historial-empty {
+          text-align: center;
+          padding: 48px 24px;
+          color: #9ca3af;
+        }
+        
+        .historial-empty-icon {
+          font-size: 48px;
+          margin-bottom: 16px;
+          opacity: 0.5;
+        }
+        
+        .historial-badge-premium {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 12px;
+          border-radius: 8px;
+          font-size: 13px;
+          font-weight: 600;
+          letter-spacing: 0.3px;
+        }
+        
+        .historial-badge-premium.activa {
+          background: #d1fae5;
+          color: #065f46;
+        }
+        
+        .historial-badge-premium.pagada {
+          background: #dbeafe;
+          color: #1e40af;
+        }
+        
+        .historial-badge-premium.cancelada {
+          background: #f3f4f6;
+          color: #4b5563;
+        }
+        
+        @keyframes slideUp {
+          from {
+            opacity: 0;
+            transform: translateY(20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        .historial-obligacion {
+          animation: slideUp 0.4s ease-out forwards;
+        }
+        
+        .historial-obligacion:nth-child(1) { animation-delay: 0.1s; }
+        .historial-obligacion:nth-child(2) { animation-delay: 0.2s; }
+        .historial-obligacion:nth-child(3) { animation-delay: 0.3s; }
+      </style>
+      
+      <div class="historial-modal-premium">
+        <!-- Header Premium -->
+        <div class="historial-header">
+          <div class="historial-avatar">${cliente.nombre.charAt(0).toUpperCase()}</div>
+          <h2 class="historial-cliente-nombre">${cliente.nombre}</h2>
+          <div class="historial-cliente-info">
+            <span>📄 ${cliente.tipo_documento || 'CC'} ${cliente.documento}</span>
+            ${cliente.telefono ? `<span>📞 ${cliente.telefono}</span>` : ''}
+            <span>📊 ${obligaciones.length} obligación${obligaciones.length !== 1 ? 'es' : ''}</span>
+            <span>💰 ${pagos.length} pago${pagos.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+        
+        <!-- KPI Cards -->
+        <div class="historial-kpi-grid">
+          <div class="historial-kpi-card">
+            <div class="historial-kpi-icon primary">💵</div>
+            <div class="historial-kpi-value">${formatCurrency(totalObligaciones)}</div>
+            <div class="historial-kpi-label">Total Obligaciones</div>
+          </div>
+          
+          <div class="historial-kpi-card">
+            <div class="historial-kpi-icon success">✓</div>
+            <div class="historial-kpi-value">${formatCurrency(totalPagado)}</div>
+            <div class="historial-kpi-label">Total Pagado</div>
+            <div class="historial-progress">
+              <div class="historial-progress-fill" style="width: ${porcentajePagado}%"></div>
+            </div>
+          </div>
+          
+          <div class="historial-kpi-card">
+            <div class="historial-kpi-icon warning">⏳</div>
+            <div class="historial-kpi-value">${formatCurrency(saldoPendiente)}</div>
+            <div class="historial-kpi-label">Saldo Pendiente</div>
+          </div>
+        </div>
+        
+        ${obligaciones.length === 0 ? `
+          <div class="historial-empty">
+            <div class="historial-empty-icon">📋</div>
+            <p><strong>Sin obligaciones registradas</strong></p>
+            <p style="font-size: 14px; margin-top: 8px;">Este cliente aún no tiene obligaciones en el sistema.</p>
+          </div>
+        ` : obligaciones.map((obl, idx) => {
+          const pagosObl = pagosPorObligacion[obl.id].pagos;
+          const totalPagadoObl = pagosObl.reduce((sum, p) => sum + parseFloat(p.monto), 0);
+          const porcentajeObl = obl.capital > 0 ? (totalPagadoObl / obl.capital * 100) : 0;
+          const saldoObl = obl.capital - totalPagadoObl;
+          
+          // Icono de método de pago
+          const getMetodoIcon = (metodo) => {
+            const m = (metodo || 'efectivo').toLowerCase();
+            if (m.includes('efectivo')) return '💵';
+            if (m.includes('tarjeta') || m.includes('debito') || m.includes('credito')) return '💳';
+            if (m.includes('transferencia') || m.includes('nequi') || m.includes('daviplata')) return '📱';
+            if (m.includes('cheque')) return '📝';
+            return '💰';
+          };
+          
+          return `
+            <div class="historial-obligacion" style="opacity: 0;">
+              <div class="historial-obl-header">
+                <div class="historial-obl-title">
+                  <div class="historial-obl-icon">${obl.tipo === 'prestamo' ? '💰' : '📦'}</div>
+                  <div class="historial-obl-name">
+                    ${obl.tipo === 'prestamo' ? 'Préstamo' : 'Producto'} #${obl.id}
+                  </div>
+                  <span class="historial-badge-premium ${obl.estado}">
+                    ${obl.estado === 'activa' ? '🟢' : obl.estado === 'pagada' ? '✅' : '⚫'}
+                    ${obl.estado}
+                  </span>
+                </div>
+                
+                <div class="historial-obl-stats">
+                  <div class="historial-obl-stat">
+                    <div class="historial-obl-stat-label">Capital</div>
+                    <div class="historial-obl-stat-value">${formatCurrency(obl.capital)}</div>
+                  </div>
+                  <div class="historial-obl-stat">
+                    <div class="historial-obl-stat-label">Pagado</div>
+                    <div class="historial-obl-stat-value" style="color: #10b981;">${formatCurrency(totalPagadoObl)}</div>
+                  </div>
+                  <div class="historial-obl-stat">
+                    <div class="historial-obl-stat-label">Saldo</div>
+                    <div class="historial-obl-stat-value" style="color: ${saldoObl > 0 ? '#f59e0b' : '#10b981'};">${formatCurrency(saldoObl)}</div>
+                  </div>
+                </div>
+                
+                <div class="historial-progress" style="margin-top: 16px;">
+                  <div class="historial-progress-fill" style="width: ${porcentajeObl}%"></div>
+                </div>
+              </div>
+              
+              ${pagosObl.length === 0 ? `
+                <div class="historial-empty" style="padding: 32px 24px;">
+                  <div class="historial-empty-icon" style="font-size: 32px;">💳</div>
+                  <p style="font-size: 14px; color: #6b7280;">Sin pagos registrados</p>
+                </div>
+              ` : `
+                <div class="historial-timeline">
+                  ${pagosObl.map((pago, pidx) => `
+                    <div class="historial-timeline-item">
+                      <div class="historial-timeline-marker">💰</div>
+                      <div class="historial-timeline-content">
+                        <div class="historial-timeline-header">
+                          <div>
+                            <div class="historial-timeline-date">📅 ${formatDate(pago.fecha_pago)}</div>
+                            <div style="font-size: 12px; color: #9ca3af; margin-top: 2px;">Cuota #${pago.cuotas.numero}</div>
+                          </div>
+                          <div class="historial-timeline-amount">${formatCurrency(pago.monto)}</div>
+                        </div>
+                        <div class="historial-timeline-details">
+                          <div class="historial-timeline-detail">
+                            <span class="historial-metodo-icon">
+                              ${getMetodoIcon(pago.metodo)} ${pago.metodo || 'Efectivo'}
+                            </span>
+                          </div>
+                          ${(pago.soporte_url || pago.soporte_path) ? `
+                            <div class="historial-timeline-detail">
+                              <button 
+                                class="historial-comprobante-btn" 
+                                onclick="toggleComprobantePreview('preview-${pago.id}', '${pago.soporte_url}', '${pago.tipo_soporte || 'imagen'}')"
+                                id="btn-preview-${pago.id}">
+                                📎 Ver Comprobante
+                              </button>
+                            </div>
+                          ` : `
+                            <div class="historial-timeline-detail">
+                              <span style="font-size: 12px; color: #9ca3af; font-style: italic;">
+                                Sin comprobante
+                              </span>
+                            </div>
+                          `}
+                        </div>
+                        ${(pago.soporte_url || pago.soporte_path) ? `
+                          <div class="historial-comprobante-preview" id="preview-${pago.id}">
+                            <div class="historial-preview-header">
+                              <span class="historial-preview-title">📎 Comprobante de pago</span>
+                              <div class="historial-preview-actions">
+                                <button class="historial-preview-btn" onclick="window.open('${pago.soporte_url}', '_blank')">
+                                  🔍 Ampliar
+                                </button>
+                                <button class="historial-preview-btn" onclick="toggleComprobantePreview('preview-${pago.id}')">✕</button>
+                              </div>
+                            </div>
+                            <div class="historial-preview-content" id="preview-content-${pago.id}"></div>
+                          </div>
+                        ` : ''}
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+
+    showModal(
+      `📊 Historial de Pagos`,
+      contenido,
+      `<button class="btn btn-secondary" onclick="hideModal()">Cerrar</button>`
+    );
+
+  } catch (error) {
+    console.error("Error en verHistorialCliente:", error);
+    showToast("Error al cargar historial", "error");
+  }
 }
 
 function registrarPagoCuota(cuotaId, clienteId) {
@@ -1975,6 +2756,11 @@ async function loadPagos() {
   // Listeners
   setupPagosListeners();
   
+  // Limpiar localStorage de clientes eliminados (en segundo plano)
+  limpiarClientesRecientesEliminados().catch(err => 
+    console.error('Error al limpiar recientes:', err)
+  );
+  
   // Cargar KPIs y paneles
   await Promise.all([
     cargarKPIPagos(),
@@ -2099,10 +2885,31 @@ async function cargarClientesRecientes() {
   const container = document.getElementById("listaClientesRecientes");
   
   try {
-    // Intentar obtener de localStorage primero
-    let clientes = getClientesRecientes();
+    // Obtener clientes recientes del localStorage
+    const clientesLocal = getClientesRecientes();
     
-    // Si hay menos de 3, completar con DB
+    // Siempre validar contra la DB y obtener datos frescos
+    let clientes = [];
+    
+    if (clientesLocal.length > 0) {
+      // Validar cada cliente del localStorage contra la DB (con manejo de errores)
+      const clientesValidados = await Promise.all(
+        clientesLocal.slice(0, 6).map(async (c) => {
+          try {
+            const clienteDB = await obtenerClientePorId(c.id);
+            return clienteDB; // null si no existe
+          } catch (err) {
+            // Cliente no accesible, ignorar
+            return null;
+          }
+        })
+      );
+      
+      // Filtrar los que realmente existen
+      clientes = clientesValidados.filter(c => c !== null);
+    }
+    
+    // Si hay menos de 3 clientes validados, completar con los más recientes de la DB
     if (clientes.length < 3) {
       const fallback = await obtenerClientesRecientesFallback();
       
@@ -2110,11 +2917,11 @@ async function cargarClientesRecientes() {
       const idsExistentes = new Set(clientes.map(c => c.id));
       const clientesNuevos = fallback.filter(c => !idsExistentes.has(c.id));
       
-      clientes = [...clientes, ...clientesNuevos].slice(0, 3);
-    } else {
-      // Limitar a 3
-      clientes = clientes.slice(0, 3);
+      clientes = [...clientes, ...clientesNuevos];
     }
+    
+    // Limitar a 3 para mostrar
+    clientes = clientes.slice(0, 3);
     
     if (clientes.length === 0) {
       container.innerHTML = `
@@ -2428,14 +3235,20 @@ function highlightMatch(text, termino) {
 
 async function seleccionarClientePagos(clienteId) {
   try {
-    // Obtener cliente
-    const { data: cliente } = await supabaseClient
-      .from("clientes")
-      .select("*")
-      .eq("id", clienteId)
-      .single();
+    // Asegurar que el ID sea un número entero
+    const idCliente = parseInt(clienteId, 10);
+    if (isNaN(idCliente)) {
+      showToast("ID de cliente inválido", "error");
+      return;
+    }
 
-    if (!cliente) return;
+    // Obtener cliente
+    const cliente = await obtenerClientePorId(idCliente);
+
+    if (!cliente) {
+      showToast("Cliente no encontrado", "error");
+      return;
+    }
 
     selectedClientePagos = cliente;
     
@@ -2449,7 +3262,7 @@ async function seleccionarClientePagos(clienteId) {
     guardarClienteReciente(cliente);
 
     // Obtener resumen financiero
-    const resumen = await obtenerResumenFinancieroCliente(clienteId);
+    const resumen = await obtenerResumenFinancieroCliente(idCliente);
 
     // Mostrar resumen
     const resumenContainer = document.getElementById("clienteResumenPagos");
@@ -2500,7 +3313,7 @@ async function seleccionarClientePagos(clienteId) {
     document.getElementById('btnLimpiarSeleccionPagos').addEventListener('click', limpiarSeleccionPagos);
 
     // Cargar obligaciones
-    await cargarObligacionesClientePagos(clienteId);
+    await cargarObligacionesClientePagos(idCliente);
 
     // Mostrar botones de acción (solo si existen en la vista antigua)
     const btnExportar = document.getElementById("btnExportarPagos");
@@ -3482,13 +4295,15 @@ async function abrirWizardPago(clienteId = null) {
   // Si viene con clienteId, pre-cargar y saltar al paso 2
   if (clienteId) {
     try {
-      const { data: cliente, error } = await supabaseClient
-        .from('clientes')
-        .select('*')
-        .eq('id', clienteId)
-        .single();
+      // Asegurar que el ID sea un número entero
+      const idCliente = parseInt(clienteId, 10);
+      if (isNaN(idCliente)) {
+        showToast('ID de cliente inválido', 'error');
+        return;
+      }
+
+      const cliente = await obtenerClientePorId(idCliente);
       
-      if (error) throw error;
       if (!cliente) {
         showToast('Cliente no encontrado', 'error');
         return;
@@ -7220,6 +8035,29 @@ function subirDocumento() {
 }
 
 // ========== AUDITORÍA ==========
+
+/**
+ * Corrige masivamente los registros de auditoría de comprobantes
+ */
+async function corregirComprobantesMasivo() {
+  try {
+    showToast("Actualizando registros de auditoría...", "info");
+    
+    const resultado = await corregirAuditoriaComprobantes();
+    
+    if (resultado.success) {
+      showToast(`✓ Se actualizaron ${resultado.actualizados} registros de auditoría`, "success");
+      // Recargar auditoría para mostrar cambios
+      await loadAuditoria();
+    } else {
+      showToast(`Error: ${resultado.error}`, "error");
+    }
+  } catch (error) {
+    console.error("Error al corregir comprobantes:", error);
+    showToast("Error al actualizar registros", "error");
+  }
+}
+
 async function loadAuditoria() {
   const container = document.getElementById("viewAuditoria");
   showLoading(container, "Cargando auditoría...");
@@ -7243,6 +8081,13 @@ async function loadAuditoria() {
             <h2 class="audit-header-title">📋 Auditoría y Bitácora</h2>
             <p class="audit-header-subtitle">Registro completo de todas las acciones realizadas en el sistema</p>
           </div>
+          <button 
+            class="btn btn-sm btn-secondary" 
+            onclick="corregirComprobantesMasivo()"
+            style="height: fit-content;"
+            title="Actualizar registros de comprobantes en auditoría">
+            🔄 Actualizar Comprobantes
+          </button>
         </div>
 
         <!-- Estadísticas -->

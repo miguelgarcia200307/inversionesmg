@@ -13,8 +13,8 @@ const INVENTORY_CONFIG = {
 };
 
 // ========== CONFIGURACIÓN DE SCANNER (DEBUG Y OPTIMIZACIÓN) ==========
-const SCANNER_DEBUG = localStorage.getItem('scanner_debug') === 'true' || false;
-const SCANNER_NO_DETECT_TIMEOUT = 8000; // 8 segundos sin detectar → mostrar tips
+const SCANNER_DEBUG = localStorage.getItem('scanner_debug') === 'true' || true; // Forzar debug temporalmente para diagnosticar
+const SCANNER_NO_DETECT_TIMEOUT = 15000; // 15 segundos sin detectar → mostrar tips (menos intrusivo)
 
 /**
  * ESTRATEGIA DE DETECCIÓN MULTI-INTENTO (FIX PROBLEMA ROI)
@@ -73,10 +73,12 @@ let loginLockoutUntil = null;
 let scannerEngine = null; // 'native' o 'zxing'
 let zxingCodeReader = null;
 let zxingAnimationFrame = null;
+let nativeAnimationFrame = null;
 let availableCameras = [];
 let selectedCameraId = null;
 let scannerStartTime = 0; // Timestamp cuando inició el scanner
 let scannerTipsShown = false; // Si ya se mostraron tips
+let scannerAttemptCount = 0; // Contador de intentos de detección
 
 // ========== ELEMENTOS DEL DOM ==========
 const loginScreen = document.getElementById("loginScreen");
@@ -302,7 +304,7 @@ function setupNavigation() {
     });
   });
   
-  // Botón de menú móvil
+  // Botón de menú móvil (header)
   btnMenu.addEventListener("click", () => {
     inventorySidebar.classList.toggle("active");
     sidebarOverlay.classList.toggle("active");
@@ -405,182 +407,442 @@ async function loadDashboard(container) {
   try {
     const kpis = await InventoryDB.obtenerKPIsDashboard();
     const productosMasVendidos = await InventoryDB.obtenerProductosMasVendidos(5);
+    const productos = await InventoryDB.obtenerTodosProductos({ activo: true });
+    const ventas = await InventoryDB.obtenerTodasVentas();
+    const isMobile = window.innerWidth <= 768;
     
-    container.innerHTML = `
-      <div class="inv-dashboard">
-        <!-- Header con gradiente -->
-        <div class="inv-dashboard-header">
-          <h1 class="inv-dashboard-title">📊 Dashboard Inventarios</h1>
-          <p class="inv-dashboard-subtitle">Visión general del estado de tu inventario</p>
+    // Calcular métricas adicionales
+    const productosStockBajo = productos.filter(p => parseFloat(p.stock_actual) < parseFloat(p.stock_minimo));
+    const productosStockCero = productos.filter(p => parseFloat(p.stock_actual) === 0);
+    
+    // Ventas de hoy
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const ventasHoy = ventas.filter(v => {
+      const fechaVenta = new Date(v.fecha);
+      return fechaVenta >= hoy;
+    });
+    const ventasHoyTotal = ventasHoy.reduce((sum, v) => sum + parseFloat(v.precio_venta || 0), 0);
+    
+    // Fecha actual
+    const fechaActual = new Date().toLocaleDateString('es-CO', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    
+    if (isMobile) {
+      // ========== VISTA MÓVIL ==========
+      container.innerHTML = `
+        <div class="inv-dash-mobile">
+          <!-- Header con bienvenida -->
+          <div class="inv-dash-header-mobile">
+            <div class="inv-dash-welcome-mobile">
+              <h1 class="inv-dash-title-mobile">👋 ¡Hola!</h1>
+              <p class="inv-dash-subtitle-mobile">${fechaActual}</p>
+            </div>
+            <button class="inv-dash-notif-btn" onclick="showToast('Sin notificaciones nuevas', 'info')">
+              🔔
+              ${(productosStockBajo.length + productosStockCero.length) > 0 ? `<span class="inv-notif-badge">${productosStockBajo.length + productosStockCero.length}</span>` : ''}
+            </button>
+          </div>
+          
+          <!-- Resumen del día -->
+          <div class="inv-dash-summary-mobile">
+            <div class="inv-dash-summary-card primary">
+              <div class="inv-dash-summary-icon">💰</div>
+              <div class="inv-dash-summary-content">
+                <span class="inv-dash-summary-label">Ventas de Hoy</span>
+                <span class="inv-dash-summary-value">${formatCurrency(ventasHoyTotal)}</span>
+                <span class="inv-dash-summary-meta">${ventasHoy.length} transacciones</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- KPIs Grid móvil -->
+          <div class="inv-dash-kpis-mobile">
+            <h2 class="inv-dash-section-title">📊 Métricas Clave</h2>
+            <div class="inv-dash-kpis-grid-mobile">
+              <div class="inv-dash-kpi-compact" onclick="loadView('productos')">
+                <div class="inv-dash-kpi-compact-header">
+                  <span class="inv-dash-kpi-compact-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">📦</span>
+                  <span class="inv-dash-kpi-compact-trend success">Activo</span>
+                </div>
+                <div class="inv-dash-kpi-compact-value">${kpis.totalProductos}</div>
+                <div class="inv-dash-kpi-compact-label">Total Productos</div>
+              </div>
+              
+              <div class="inv-dash-kpi-compact" onclick="generarReporteStockBajo()">
+                <div class="inv-dash-kpi-compact-header">
+                  <span class="inv-dash-kpi-compact-icon" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">⚠️</span>
+                  <span class="inv-dash-kpi-compact-trend ${kpis.productosBajoStock > 0 ? 'warning' : 'success'}">${kpis.productosBajoStock > 0 ? 'Alerta' : 'OK'}</span>
+                </div>
+                <div class="inv-dash-kpi-compact-value">${kpis.productosBajoStock}</div>
+                <div class="inv-dash-kpi-compact-label">Stock Bajo</div>
+              </div>
+              
+              <div class="inv-dash-kpi-compact">
+                <div class="inv-dash-kpi-compact-header">
+                  <span class="inv-dash-kpi-compact-icon" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">💵</span>
+                  <span class="inv-dash-kpi-compact-trend success">↑ ${kpis.ventasMesTotal > 0 ? Math.round((kpis.utilidadMesTotal / kpis.ventasMesTotal) * 100) : 0}%</span>
+                </div>
+                <div class="inv-dash-kpi-compact-value">${formatCurrency(kpis.utilidadMesTotal)}</div>
+                <div class="inv-dash-kpi-compact-label">Utilidad Mes</div>
+              </div>
+              
+              <div class="inv-dash-kpi-compact" onclick="loadView('ventas')">
+                <div class="inv-dash-kpi-compact-header">
+                  <span class="inv-dash-kpi-compact-icon" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);">📈</span>
+                  <span class="inv-dash-kpi-compact-trend info">${kpis.cantidadVentasMes} ventas</span>
+                </div>
+                <div class="inv-dash-kpi-compact-value">${formatCurrency(kpis.ventasMesTotal)}</div>
+                <div class="inv-dash-kpi-compact-label">Ventas Mes</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Acciones rápidas móvil -->
+          <div class="inv-dash-actions-mobile">
+            <h2 class="inv-dash-section-title">⚡ Acciones Rápidas</h2>
+            <div class="inv-dash-actions-grid-mobile">
+              <button class="inv-dash-action-btn primary" onclick="openQuickSale()">
+                <span class="inv-dash-action-icon">💳</span>
+                <span class="inv-dash-action-text">Nueva Venta</span>
+              </button>
+              <button class="inv-dash-action-btn secondary" onclick="openNewProduct()">
+                <span class="inv-dash-action-icon">➕</span>
+                <span class="inv-dash-action-text">Agregar Producto</span>
+              </button>
+              <button class="inv-dash-action-btn tertiary" onclick="openScanner()">
+                <span class="inv-dash-action-icon">📷</span>
+                <span class="inv-dash-action-text">Escanear</span>
+              </button>
+              <button class="inv-dash-action-btn quaternary" onclick="loadView('reportes')">
+                <span class="inv-dash-action-icon">📊</span>
+                <span class="inv-dash-action-text">Ver Reportes</span>
+              </button>
+            </div>
+          </div>
+          
+          <!-- Top productos móvil -->
+          ${productosMasVendidos.length > 0 ? `
+            <div class="inv-dash-top-mobile">
+              <div class="inv-dash-top-header">
+                <h2 class="inv-dash-section-title">🏆 Más Vendidos</h2>
+                <button class="inv-dash-view-all" onclick="loadView('reportes')">Ver todos →</button>
+              </div>
+              <div class="inv-dash-top-list">
+                ${productosMasVendidos.map((p, i) => `
+                  <div class="inv-dash-top-item">
+                    <div class="inv-dash-top-rank">${i + 1}</div>
+                    <div class="inv-dash-top-info">
+                      <div class="inv-dash-top-name">${p.nombre || 'Sin nombre'}</div>
+                      <div class="inv-dash-top-meta">SKU: ${p.sku}</div>
+                    </div>
+                    <div class="inv-dash-top-sales">
+                      <div class="inv-dash-top-number">${p.cantidad_total}</div>
+                      <div class="inv-dash-top-label">unidades</div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+          
+          <!-- Alertas móvil -->
+          ${(productosStockBajo.length > 0 || productosStockCero.length > 0) ? `
+            <div class="inv-dash-alerts-mobile">
+              <h2 class="inv-dash-section-title">⚠️ Alertas de Inventario</h2>
+              ${productosStockCero.length > 0 ? `
+                <div class="inv-dash-alert danger" onclick="generarReporteStockBajo()">
+                  <span class="inv-dash-alert-icon">❌</span>
+                  <div class="inv-dash-alert-content">
+                    <div class="inv-dash-alert-title">${productosStockCero.length} producto${productosStockCero.length > 1 ? 's' : ''} sin stock</div>
+                    <div class="inv-dash-alert-description">Requiere reposición urgente</div>
+                  </div>
+                  <span class="inv-dash-alert-arrow">→</span>
+                </div>
+              ` : ''}
+              ${productosStockBajo.length > 0 ? `
+                <div class="inv-dash-alert warning" onclick="generarReporteStockBajo()">
+                  <span class="inv-dash-alert-icon">⚠️</span>
+                  <div class="inv-dash-alert-content">
+                    <div class="inv-dash-alert-title">${productosStockBajo.length} producto${productosStockBajo.length > 1 ? 's' : ''} con stock bajo</div>
+                    <div class="inv-dash-alert-description">Planificar próxima compra</div>
+                  </div>
+                  <span class="inv-dash-alert-arrow">→</span>
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
         </div>
-        
-        <!-- KPIs Premium -->
-        <div class="inv-kpi-grid">
-          <div class="inv-kpi-card">
-            <div class="inv-kpi-header">
-              <div class="inv-kpi-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-                📦
-              </div>
-              <div class="inv-kpi-badge info">Inventario</div>
+      `;
+    } else {
+      // ========== VISTA DESKTOP ==========
+      container.innerHTML = `
+        <div class="inv-dash-desktop">
+          <!-- Header -->
+          <div class="inv-dash-header-desktop">
+            <div class="inv-dash-welcome-desktop">
+              <h1 class="inv-dash-title-desktop">📊 Dashboard de Inventarios</h1>
+              <p class="inv-dash-subtitle-desktop">${fechaActual} • Visión completa de tu negocio</p>
             </div>
-            <div class="inv-kpi-body">
-              <div class="inv-kpi-label">Total Productos</div>
-              <div class="inv-kpi-value">${kpis.totalProductos}</div>
-            </div>
-            <div class="inv-kpi-footer">
-              <span class="inv-kpi-trend up">↑ Activos</span>
-              <span>En stock</span>
-            </div>
-          </div>
-          
-          <div class="inv-kpi-card">
-            <div class="inv-kpi-header">
-              <div class="inv-kpi-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
-                💰
-              </div>
-              <div class="inv-kpi-badge success">Valorización</div>
-            </div>
-            <div class="inv-kpi-body">
-              <div class="inv-kpi-label">Valor al Costo</div>
-              <div class="inv-kpi-value">${formatCurrency(kpis.valorInventarioCosto)}</div>
-            </div>
-            <div class="inv-kpi-footer">
-              <span>Inversión total</span>
+            <div class="inv-dash-header-actions">
+              <button class="inv-btn inv-btn-secondary" onclick="location.reload()">
+                🔄 Actualizar
+              </button>
+              <button class="inv-btn inv-btn-primary" onclick="loadView('reportes')">
+                📊 Ver Reportes
+              </button>
             </div>
           </div>
           
-          <div class="inv-kpi-card">
-            <div class="inv-kpi-header">
-              <div class="inv-kpi-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
-                📈
+          <!-- KPIs Grid Desktop -->
+          <div class="inv-dash-kpis-desktop">
+            <div class="inv-dash-kpi-card-desktop" style="--kpi-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);" onclick="loadView('productos')">
+              <div class="inv-dash-kpi-header-desktop">
+                <span class="inv-dash-kpi-icon-desktop">📦</span>
+                <span class="inv-dash-kpi-badge-desktop success">Activo</span>
               </div>
-              <div class="inv-kpi-badge success">Potencial</div>
-            </div>
-            <div class="inv-kpi-body">
-              <div class="inv-kpi-label">Valor Sugerido</div>
-              <div class="inv-kpi-value">${formatCurrency(kpis.valorInventarioSugerido)}</div>
-            </div>
-            <div class="inv-kpi-footer">
-              <span class="inv-kpi-trend up">↑ ${kpis.valorInventarioCosto > 0 ? Math.round(((kpis.valorInventarioSugerido - kpis.valorInventarioCosto) / kpis.valorInventarioCosto) * 100) : 0}%</span>
-              <span>Margen proyectado</span>
-            </div>
-          </div>
-          
-          <div class="inv-kpi-card">
-            <div class="inv-kpi-header">
-              <div class="inv-kpi-icon" style="background: ${kpis.productosBajoStock > 0 ? 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)' : 'linear-gradient(135deg, #30cfd0 0%, #330867 100%)'};">
-                ${kpis.productosBajoStock > 0 ? '⚠️' : '✅'}
+              <div class="inv-dash-kpi-content-desktop">
+                <div class="inv-dash-kpi-value-desktop">${kpis.totalProductos}</div>
+                <div class="inv-dash-kpi-label-desktop">Total Productos</div>
+                <div class="inv-dash-kpi-meta-desktop">
+                  <span>En catálogo</span>
+                  <span class="inv-dash-kpi-arrow">→</span>
+                </div>
               </div>
-              <div class="inv-kpi-badge ${kpis.productosBajoStock > 0 ? 'warning' : 'success'}">
-                ${kpis.productosBajoStock > 0 ? 'Alerta' : 'Normal'}
-              </div>
-            </div>
-            <div class="inv-kpi-body">
-              <div class="inv-kpi-label">Stock Bajo</div>
-              <div class="inv-kpi-value">${kpis.productosBajoStock}</div>
-            </div>
-            <div class="inv-kpi-footer">
-              <span>${kpis.productosBajoStock > 0 ? 'Requiere atención' : 'Todo en orden'}</span>
-            </div>
-          </div>
-          
-          <div class="inv-kpi-card">
-            <div class="inv-kpi-header">
-              <div class="inv-kpi-icon" style="background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);">
-                🛒
-              </div>
-              <div class="inv-kpi-badge info">Este Mes</div>
-            </div>
-            <div class="inv-kpi-body">
-              <div class="inv-kpi-label">Ventas del Mes</div>
-              <div class="inv-kpi-value">${formatCurrency(kpis.ventasMesTotal)}</div>
-            </div>
-            <div class="inv-kpi-footer">
-              <span class="inv-kpi-trend up">↑ ${kpis.cantidadVentasMes}</span>
-              <span>transacciones</span>
-            </div>
-          </div>
-          
-          <div class="inv-kpi-card">
-            <div class="inv-kpi-header">
-              <div class="inv-kpi-icon" style="background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);">
-                💵
-              </div>
-              <div class="inv-kpi-badge success">Ganancia</div>
-            </div>
-            <div class="inv-kpi-body">
-              <div class="inv-kpi-label">Utilidad del Mes</div>
-              <div class="inv-kpi-value">${formatCurrency(kpis.utilidadMesTotal)}</div>
-            </div>
-            <div class="inv-kpi-footer">
-              <span class="inv-kpi-trend up">↑ ${kpis.ventasMesTotal > 0 ? Math.round((kpis.utilidadMesTotal / kpis.ventasMesTotal) * 100) : 0}%</span>
-              <span>margen real</span>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Acciones rápidas -->
-        <div class="inv-action-section">
-          <h2 class="inv-section-title">⚡ Acciones Rápidas</h2>
-          <div class="inv-action-grid">
-            <div class="inv-action-card" onclick="openQuickSale()">
-              <span class="inv-action-icon">💳</span>
-              <h3 class="inv-action-title">Nueva Venta</h3>
-              <p class="inv-action-description">Registra una venta rápida con scanner de código de barras</p>
             </div>
             
-            <div class="inv-action-card" onclick="openNewProduct()">
-              <span class="inv-action-icon">➕</span>
-              <h3 class="inv-action-title">Nuevo Producto</h3>
-              <p class="inv-action-description">Agrega un producto al inventario</p>
+            <div class="inv-dash-kpi-card-desktop" style="--kpi-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+              <div class="inv-dash-kpi-header-desktop">
+                <span class="inv-dash-kpi-icon-desktop">💰</span>
+                <span class="inv-dash-kpi-badge-desktop success">Hoy</span>
+              </div>
+              <div class="inv-dash-kpi-content-desktop">
+                <div class="inv-dash-kpi-value-desktop">${formatCurrency(ventasHoyTotal)}</div>
+                <div class="inv-dash-kpi-label-desktop">Ventas de Hoy</div>
+                <div class="inv-dash-kpi-meta-desktop">
+                  <span>${ventasHoy.length} transacciones</span>
+                </div>
+              </div>
             </div>
             
-            <div class="inv-action-card" onclick="openNewCompra()">
-              <span class="inv-action-icon">🛒</span>
-              <h3 class="inv-action-title">Nueva Compra</h3>
-              <p class="inv-action-description">Registra entrada de inventario</p>
+            <div class="inv-dash-kpi-card-desktop" style="--kpi-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);" onclick="loadView('ventas')">
+              <div class="inv-dash-kpi-header-desktop">
+                <span class="inv-dash-kpi-icon-desktop">📈</span>
+                <span class="inv-dash-kpi-badge-desktop info">Mes Actual</span>
+              </div>
+              <div class="inv-dash-kpi-content-desktop">
+                <div class="inv-dash-kpi-value-desktop">${formatCurrency(kpis.ventasMesTotal)}</div>
+                <div class="inv-dash-kpi-label-desktop">Ventas del Mes</div>
+                <div class="inv-dash-kpi-meta-desktop">
+                  <span>${kpis.cantidadVentasMes} ventas registradas</span>
+                  <span class="inv-dash-kpi-arrow">→</span>
+                </div>
+              </div>
             </div>
             
-            <div class="inv-action-card" onclick="scannerMode='registro'; openScanner()">
-              <span class="inv-action-icon">📷</span>
-              <h3 class="inv-action-title">Escanear Código</h3>
-              <p class="inv-action-description">Usa el scanner para buscar productos</p>
+            <div class="inv-dash-kpi-card-desktop" style="--kpi-gradient: linear-gradient(135deg, ${kpis.productosBajoStock > 0 ? '#f59e0b 0%, #d97706 100%' : '#10b981 0%, #059669 100%'});" onclick="generarReporteStockBajo()">
+              <div class="inv-dash-kpi-header-desktop">
+                <span class="inv-dash-kpi-icon-desktop">${kpis.productosBajoStock > 0 ? '⚠️' : '✅'}</span>
+                <span class="inv-dash-kpi-badge-desktop ${kpis.productosBajoStock > 0 ? 'warning' : 'success'}">${kpis.productosBajoStock > 0 ? 'Alerta' : 'Normal'}</span>
+              </div>
+              <div class="inv-dash-kpi-content-desktop">
+                <div class="inv-dash-kpi-value-desktop">${kpis.productosBajoStock}</div>
+                <div class="inv-dash-kpi-label-desktop">Stock Bajo</div>
+                <div class="inv-dash-kpi-meta-desktop">
+                  <span>${kpis.productosBajoStock > 0 ? 'Requiere atención' : 'Todo en orden'}</span>
+                  <span class="inv-dash-kpi-arrow">→</span>
+                </div>
+              </div>
+            </div>
+            
+            <div class="inv-dash-kpi-card-desktop" style="--kpi-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+              <div class="inv-dash-kpi-header-desktop">
+                <span class="inv-dash-kpi-icon-desktop">💵</span>
+                <span class="inv-dash-kpi-badge-desktop success">↑ ${kpis.ventasMesTotal > 0 ? Math.round((kpis.utilidadMesTotal / kpis.ventasMesTotal) * 100) : 0}%</span>
+              </div>
+              <div class="inv-dash-kpi-content-desktop">
+                <div class="inv-dash-kpi-value-desktop">${formatCurrency(kpis.utilidadMesTotal)}</div>
+                <div class="inv-dash-kpi-label-desktop">Utilidad del Mes</div>
+                <div class="inv-dash-kpi-meta-desktop">
+                  <span>Margen de ganancia</span>
+                </div>
+              </div>
+            </div>
+            
+            <div class="inv-dash-kpi-card-desktop" style="--kpi-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+              <div class="inv-dash-kpi-header-desktop">
+                <span class="inv-dash-kpi-icon-desktop">💎</span>
+                <span class="inv-dash-kpi-badge-desktop info">Valoración</span>
+              </div>
+              <div class="inv-dash-kpi-content-desktop">
+                <div class="inv-dash-kpi-value-desktop">${formatCurrency(kpis.valorInventarioSugerido)}</div>
+                <div class="inv-dash-kpi-label-desktop">Valor Inventario</div>
+                <div class="inv-dash-kpi-meta-desktop">
+                  <span>A precio sugerido</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Contenido principal -->
+          <div class="inv-dash-main-desktop">
+            <!-- Columna izquierda -->
+            <div class="inv-dash-column-left">
+              <!-- Acciones rápidas -->
+              <div class="inv-dash-section-desktop">
+                <h2 class="inv-dash-section-title-desktop">⚡ Acciones Rápidas</h2>
+                <div class="inv-dash-actions-desktop">
+                  <button class="inv-dash-action-card-desktop primary" onclick="openQuickSale()">
+                    <span class="inv-dash-action-icon-desktop">💳</span>
+                    <div class="inv-dash-action-info">
+                      <span class="inv-dash-action-title-desktop">Nueva Venta</span>
+                      <span class="inv-dash-action-desc-desktop">Registrar venta rápida</span>
+                    </div>
+                  </button>
+                  
+                  <button class="inv-dash-action-card-desktop secondary" onclick="openNewProduct()">
+                    <span class="inv-dash-action-icon-desktop">➕</span>
+                    <div class="inv-dash-action-info">
+                      <span class="inv-dash-action-title-desktop">Nuevo Producto</span>
+                      <span class="inv-dash-action-desc-desktop">Agregar al inventario</span>
+                    </div>
+                  </button>
+                  
+                  <button class="inv-dash-action-card-desktop tertiary" onclick="openScanner()">
+                    <span class="inv-dash-action-icon-desktop">📷</span>
+                    <div class="inv-dash-action-info">
+                      <span class="inv-dash-action-title-desktop">Escanear Código</span>
+                      <span class="inv-dash-action-desc-desktop">Buscar por código de barras</span>
+                    </div>
+                  </button>
+                  
+                  <button class="inv-dash-action-card-desktop quaternary" onclick="openNewCompra()">
+                    <span class="inv-dash-action-icon-desktop">🛒</span>
+                    <div class="inv-dash-action-info">
+                      <span class="inv-dash-action-title-desktop">Nueva Compra</span>
+                      <span class="inv-dash-action-desc-desktop">Registrar entrada</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+              
+              <!-- Top vendidos -->
+              ${productosMasVendidos.length > 0 ? `
+                <div class="inv-dash-section-desktop">
+                  <div class="inv-dash-section-header-desktop">
+                    <h2 class="inv-dash-section-title-desktop">🏆 Productos Más Vendidos</h2>
+                    <button class="inv-dash-view-all-desktop" onclick="generarReporteRotacion()">Ver todos →</button>
+                  </div>
+                  <div class="inv-dash-top-list-desktop">
+                    ${productosMasVendidos.map((p, i) => `
+                      <div class="inv-dash-top-item-desktop">
+                        <div class="inv-dash-top-rank-desktop" style="background: ${i === 0 ? 'linear-gradient(135deg, #ffd700 0%, #ffed4e 100%)' : i === 1 ? 'linear-gradient(135deg, #c0c0c0 0%, #e8e8e8 100%)' : i === 2 ? 'linear-gradient(135deg, #cd7f32 0%, #d4a574 100%)' : 'var(--inv-bg-secondary)'};">
+                          ${i + 1}
+                        </div>
+                        <div class="inv-dash-top-info-desktop">
+                          <div class="inv-dash-top-name-desktop">${p.nombre || 'Sin nombre'}</div>
+                          <div class="inv-dash-top-meta-desktop">SKU: ${p.sku}</div>
+                        </div>
+                        <div class="inv-dash-top-sales-desktop">
+                          <div class="inv-dash-top-number-desktop">${p.cantidad_total}</div>
+                          <div class="inv-dash-top-label-desktop">unidades</div>
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+            
+            <!-- Columna derecha -->
+            <div class="inv-dash-column-right">
+              <!-- Resumen financiero -->
+              <div class="inv-dash-section-desktop inv-dash-financial">
+                <h2 class="inv-dash-section-title-desktop">💰 Resumen Financiero</h2>
+                <div class="inv-dash-financial-items">
+                  <div class="inv-dash-financial-item">
+                    <span class="inv-dash-financial-label">Inversión Total</span>
+                    <span class="inv-dash-financial-value">${formatCurrency(kpis.valorInventarioCosto)}</span>
+                  </div>
+                  <div class="inv-dash-financial-divider"></div>
+                  <div class="inv-dash-financial-item">
+                    <span class="inv-dash-financial-label">Valor Sugerido</span>
+                    <span class="inv-dash-financial-value success">${formatCurrency(kpis.valorInventarioSugerido)}</span>
+                  </div>
+                  <div class="inv-dash-financial-divider"></div>
+                  <div class="inv-dash-financial-item">
+                    <span class="inv-dash-financial-label">Margen Potencial</span>
+                    <span class="inv-dash-financial-value primary">${kpis.valorInventarioCosto > 0 ? Math.round(((kpis.valorInventarioSugerido - kpis.valorInventarioCosto) / kpis.valorInventarioCosto) * 100) : 0}%</span>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Alertas -->
+              ${(productosStockBajo.length > 0 || productosStockCero.length > 0) ? `
+                <div class="inv-dash-section-desktop">
+                  <h2 class="inv-dash-section-title-desktop">⚠️ Alertas de Inventario</h2>
+                  <div class="inv-dash-alerts-desktop">
+                    ${productosStockCero.length > 0 ? `
+                      <div class="inv-dash-alert-desktop danger" onclick="generarReporteStockBajo()">
+                        <span class="inv-dash-alert-icon-desktop">❌</span>
+                        <div class="inv-dash-alert-content-desktop">
+                          <div class="inv-dash-alert-title-desktop">${productosStockCero.length} producto${productosStockCero.length > 1 ? 's' : ''} sin stock</div>
+                          <div class="inv-dash-alert-description-desktop">Requiere reposición urgente</div>
+                        </div>
+                        <span class="inv-dash-alert-arrow-desktop">→</span>
+                      </div>
+                    ` : ''}
+                    ${productosStockBajo.length > 0 ? `
+                      <div class="inv-dash-alert-desktop warning" onclick="generarReporteStockBajo()">
+                        <span class="inv-dash-alert-icon-desktop">⚠️</span>
+                        <div class="inv-dash-alert-content-desktop">
+                          <div class="inv-dash-alert-title-desktop">${productosStockBajo.length} producto${productosStockBajo.length > 1 ? 's' : ''} con stock bajo</div>
+                          <div class="inv-dash-alert-description-desktop">Planificar próxima compra</div>
+                        </div>
+                        <span class="inv-dash-alert-arrow-desktop">→</span>
+                      </div>
+                    ` : ''}
+                  </div>
+                </div>
+              ` : `
+                <div class="inv-dash-section-desktop inv-dash-success-state">
+                  <div class="inv-dash-success-icon">✅</div>
+                  <h3 class="inv-dash-success-title">¡Todo en orden!</h3>
+                  <p class="inv-dash-success-text">No hay alertas críticas en el inventario</p>
+                </div>
+              `}
+              
+              <!-- Enlaces rápidos -->
+              <div class="inv-dash-section-desktop">
+                <h2 class="inv-dash-section-title-desktop">🔗 Enlaces Rápidos</h2>
+                <div class="inv-dash-quick-links">
+                  <button class="inv-dash-quick-link" onclick="loadView('proveedores')">
+                    <span>🏭</span>
+                    <span>Proveedores</span>
+                  </button>
+                  <button class="inv-dash-quick-link" onclick="loadView('reportes')">
+                    <span>📊</span>
+                    <span>Reportes</span>
+                  </button>
+                  <button class="inv-dash-quick-link" onclick="loadView('auditoria')">
+                    <span>📋</span>
+                    <span>Auditoría</span>
+                  </button>
+                  <button class="inv-dash-quick-link" onclick="loadView('descuentos')">
+                    <span>🎯</span>
+                    <span>Descuentos</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        
-        <!-- Productos más vendidos -->
-        ${productosMasVendidos.length > 0 ? `
-          <div class="inv-products-section">
-            <div class="inv-products-header">
-              <h2 class="inv-section-title">🏆 Top 5 Productos Más Vendidos</h2>
-            </div>
-            <div class="inv-table-container">
-              <table class="inv-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Producto</th>
-                    <th>SKU</th>
-                    <th>Unidades Vendidas</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${productosMasVendidos.map((p, i) => `
-                    <tr>
-                      <td><strong>${i + 1}</strong></td>
-                      <td>${p.nombre || 'Sin nombre'}</td>
-                      <td><code style="background: var(--inv-bg-secondary); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.875rem;">${p.sku}</code></td>
-                      <td><span class="inv-badge-success"><strong>${p.cantidad_total}</strong> unidades</span></td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ` : ''}
-      </div>
-    `;
+      `;
+    }
   } catch (error) {
     Logger.error("Error al cargar dashboard:", error);
     container.innerHTML = `
@@ -598,41 +860,107 @@ async function loadProductos(container) {
   
   try {
     productosData = await InventoryDB.obtenerTodosProductos({ activo: true });
+    
+    // Calcular estadísticas
+    const totalProductos = productosData.length;
+    const productosStockBajo = productosData.filter(p => parseFloat(p.stock_actual) < parseFloat(p.stock_minimo)).length;
+    const productosSinStock = productosData.filter(p => parseFloat(p.stock_actual) === 0).length;
+    const valorInventario = productosData.reduce((sum, p) => sum + (parseFloat(p.stock_actual) * parseFloat(p.costo_unitario_base)), 0);
+    const categorias = [...new Set(productosData.map(p => p.categoria).filter(Boolean))];
+    
     const isMobile = window.innerWidth <= 768;
     
     if (isMobile) {
-      // Vista Mobile: Cards tipo App Nativa
+      // Vista Mobile Mejorada con Estadísticas
       container.innerHTML = `
-        <!-- Header Sticky -->
-        <div class="inv-products-sticky-header">
-          <div class="inv-products-search-bar">
-            <span class="inv-search-icon-mobile">🔍</span>
-            <input type="search" id="searchProductosMobile" placeholder="Buscar productos..." class="inv-search-input-mobile">
+        <div class="inv-mobile-page inv-productos-mobile">
+          <!-- Header con Estadísticas -->
+          <div class="inv-productos-mobile-header">
+            <div class="inv-productos-welcome">
+              <h2>📦 Inventario</h2>
+              <p>${totalProductos} ${totalProductos === 1 ? 'producto registrado' : 'productos registrados'}</p>
+            </div>
+            
+            <!-- Mini Stats -->
+            <div class="inv-productos-stats-mini">
+              <div class="inv-stat-mini ${productosStockBajo > 0 ? 'inv-stat-mini-warning' : ''}">
+                <span class="inv-stat-mini-icon">⚠️</span>
+                <div class="inv-stat-mini-content">
+                  <div class="inv-stat-mini-value">${productosStockBajo}</div>
+                  <div class="inv-stat-mini-label">Stock Bajo</div>
+                </div>
+              </div>
+              
+              <div class="inv-stat-mini ${productosSinStock > 0 ? 'inv-stat-mini-danger' : ''}">
+                <span class="inv-stat-mini-icon">📭</span>
+                <div class="inv-stat-mini-content">
+                  <div class="inv-stat-mini-value">${productosSinStock}</div>
+                  <div class ="inv-stat-mini-label">Sin Stock</div>
+                </div>
+              </div>
+              
+              <div class="inv-stat-mini">
+                <span class="inv-stat-mini-icon">💰</span>
+                <div class="inv-stat-mini-content">
+                  <div class="inv-stat-mini-value">${formatCurrency(valorInventario)}</div>
+                  <div class="inv-stat-mini-label">Valor Total</div>
+                </div>
+              </div>
+            </div>
           </div>
           
-          <!-- Filtros Rápidos -->
-          <div class="inv-filter-chips">
-            <button class="inv-chip active" data-filter="all">📦 Todos</button>
-            <button class="inv-chip" data-filter="low-stock">⚠️ Stock Bajo</button>
-            <button class="inv-chip" data-filter="categoria">🏷️ Por Categoría</button>
+          <!-- Header Sticky con Búsqueda -->
+          <div class="inv-sticky-search">
+            <div class="inv-search-box-enhanced">
+              <span class="inv-search-icon">🔍</span>
+              <input type="search" id="searchProductosMobile" placeholder="Buscar productos..." class="inv-search-input">
+              <button class="inv-search-clear" onclick="clearProductoSearch()" style="display: none;">✕</button>
+            </div>
           </div>
+          
+          <!-- Filtros Modernos -->
+          <div class="inv-filter-chips-modern">
+            <div class="inv-filter-chip-modern active" data-filter="all" onclick="filterProductosByType('all', this)">
+              <span class="inv-filter-chip-icon">📦</span>
+              <span>Todos</span>
+              <span class="inv-filter-chip-count">${totalProductos}</span>
+            </div>
+            <div class="inv-filter-chip-modern" data-filter="low-stock" onclick="filterProductosByType('low-stock', this)">
+              <span class="inv-filter-chip-icon">⚠️</span>
+              <span>Stock Bajo</span>
+              ${productosStockBajo > 0 ? `<span class="inv-filter-chip-count inv-alert-badge">${productosStockBajo}</span>` : ''}
+            </div>
+            <div class="inv-filter-chip-modern" data-filter="sin-stock" onclick="filterProductosByType('sin-stock', this)">
+              <span class="inv-filter-chip-icon">📭</span>
+              <span>Sin Stock</span>
+              ${productosSinStock > 0 ? `<span class="inv-filter-chip-count inv-alert-badge">${productosSinStock}</span>` : ''}
+            </div>
+            <div class="inv-filter-chip-modern" data-filter="categoria" onclick="showCategoriaFilter()">
+              <span class="inv-filter-chip-icon">🏷️</span>
+              <span>Categorías</span>
+            </div>
+          </div>
+          
+          <!-- Lista de Productos -->
+          <div class="inv-productos-card-list" id="productosListMobile">
+            ${renderProductosCards(productosData)}
+          </div>
+          
+          <!-- FAB Mejorado -->
+          <button class="inv-fab-enhanced" onclick="openNewProduct()" title="Agregar Producto">
+            <span class="inv-fab-icon">➕</span>
+          </button>
         </div>
-        
-        <!-- Lista de Productos (Cards) -->
-        <div class="inv-products-mobile-list" id="productosListMobile">
-          ${renderProductosCards(productosData)}
-        </div>
-        
-        <!-- FAB Floating Action Button -->
-        <button class="inv-fab inv-fab-extended" onclick="openNewProduct()" aria-label="Nuevo Producto">
-          <span>➕</span>
-          <span class="inv-fab-text">Nuevo</span>
-        </button>
       `;
       
       // Search functionality
-      document.getElementById("searchProductosMobile").addEventListener("input", (e) => {
-        const query = e.target.value.toLowerCase();
+      const searchInput = document.getElementById("searchProductosMobile");
+      const clearButton = container.querySelector(".inv-search-clear");
+      
+      searchInput.addEventListener("input", (e) => {
+        const query = e.target.value.toLowerCase().trim();
+        clearButton.style.display = query ? 'flex' : 'none';
+        
         const filtered = productosData.filter(p => 
           p.nombre?.toLowerCase().includes(query) ||
           p.sku?.toLowerCase().includes(query) ||
@@ -642,56 +970,118 @@ async function loadProductos(container) {
         document.getElementById("productosListMobile").innerHTML = renderProductosCards(filtered);
       });
       
-      // Chips filters
-      document.querySelectorAll(".inv-chip").forEach(chip => {
-        chip.addEventListener("click", (e) => {
-          // Toggle active
-          document.querySelectorAll(".inv-chip").forEach(c => c.classList.remove("active"));
-          e.target.classList.add("active");
-          
-          const filter = e.target.dataset.filter;
-          let filtered = productosData;
-          
-          if (filter === "low-stock") {
-            filtered = productosData.filter(p => parseFloat(p.stock_actual) < parseFloat(p.stock_minimo));
-          }
-          
-          document.getElementById("productosListMobile").innerHTML = renderProductosCards(filtered);
-        });
-      });
-      
     } else {
-      // Vista Desktop: Tabla
+      // Vista Desktop Mejorada con KPIs
       container.innerHTML = `
-        <div class="inv-products-section inv-products-desktop-view">
-          <div class="inv-products-header">
-            <h2 class="inv-section-title">📦 Gestión de Productos</h2>
-            <div class="inv-products-toolbar">
-              <div class="inv-search-container">
-                <span class="inv-search-icon">🔍</span>
-                <input type="search" id="searchProductos" placeholder="Buscar por nombre, SKU o categoría..." class="inv-search-input">
+        <div class="inv-desktop-page inv-productos-desktop">
+          <!-- Header con Estadísticas -->
+          <div class="inv-productos-desktop-header">
+            <div class="inv-productos-header-top">
+              <div>
+                <h1 class="inv-page-title">📦 Gestión de Productos</h1>
+                <p class="inv-page-subtitle">${totalProductos} ${totalProductos === 1 ? 'producto' : 'productos'} • ${categorias.length} ${categorias.length === 1 ? 'categoría' : 'categorías'}</p>
               </div>
-              <button class="inv-btn inv-btn-success" onclick="openNewProduct()">
-                ➕ Nuevo Producto
-              </button>
-              <button class="inv-btn inv-btn-secondary" onclick="scannerMode='registro'; openScanner()">
-                📷 Escanear
+              
+              <div class="inv-productos-header-actions">
+                <button class="inv-btn inv-btn-secondary" onclick="exportProductos()" title="Exportar a Excel">
+                  📤 Exportar
+                </button>
+                <button class="inv-btn inv-btn-secondary" onclick="importProductos()" title="Importar desde Excel">
+                  📥 Importar
+                </button>
+                <button class="inv-btn inv-btn-primary" onclick="openNewProduct()">
+                  ➕ Nuevo Producto
+                </button>
+              </div>
+            </div>
+            
+            <!-- KPI Cards -->
+            <div class="inv-productos-kpi-row">
+              <div class="inv-productos-kpi-card">
+                <div class="inv-productos-kpi-icon" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);">
+                  📦
+                </div>
+                <div class="inv-productos-kpi-content">
+                  <div class="inv-productos-kpi-label">Total Productos</div>
+                  <div class="inv-productos-kpi-value">${totalProductos}</div>
+                </div>
+              </div>
+              
+              <div class="inv-productos-kpi-card ${productosStockBajo > 0 ? 'inv-kpi-warning' : ''}">
+                <div class="inv-productos-kpi-icon" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+                  ⚠️
+                </div>
+                <div class="inv-productos-kpi-content">
+                  <div class="inv-productos-kpi-label">Stock Bajo</div>
+                  <div class="inv-productos-kpi-value">${productosStockBajo}</div>
+                </div>
+              </div>
+              
+              <div class="inv-productos-kpi-card ${productosSinStock > 0 ? 'inv-kpi-danger' : ''}">
+                <div class="inv-productos-kpi-icon" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);">
+                  📭
+                </div>
+                <div class="inv-productos-kpi-content">
+                  <div class="inv-productos-kpi-label">Sin Stock</div>
+                  <div class="inv-productos-kpi-value">${productosSinStock}</div>
+                </div>
+              </div>
+              
+              <div class="inv-productos-kpi-card">
+                <div class="inv-productos-kpi-icon" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                  💰
+                </div>
+                <div class="inv-productos-kpi-content">
+                  <div class="inv-productos-kpi-label">Valor Inventario</div>
+                  <div class="inv-productos-kpi-value">${formatCurrency(valorInventario)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Toolbar con Filtros -->
+          <div class="inv-productos-toolbar">
+            <div class="inv-search-box-enhanced">
+              <span class="inv-search-icon">🔍</span>
+              <input type="search" id="searchProductos" placeholder="Buscar por nombre, SKU, marca o categoría..." class="inv-search-input">
+              <button class="inv-search-clear" onclick="clearProductoSearch()" style="display: none;">✕</button>
+            </div>
+            
+            <div class="inv-toolbar-filters">
+              <select class="inv-select-filter" id="filterCategoria" onchange="applyProductoFilters()">
+                <option value="">🏷️ Todas las categorías</option>
+                ${categorias.sort().map(cat => `<option value="${cat}">${cat}</option>`).join('')}
+              </select>
+              
+              <select class="inv-select-filter" id="filterStock" onchange="applyProductoFilters()">
+                <option value="">📊 Estado de stock</option>
+                <option value="sin-stock">Sin Stock</option>
+                <option value="stock-bajo">Stock Bajo</option>
+                <option value="stock-ok">Stock Normal</option>
+              </select>
+              
+              <button class="inv-btn inv-btn-icon-only" onclick="resetProductoFilters()" title="Limpiar filtros">
+                🔄
               </button>
             </div>
           </div>
           
-          <div class="inv-table-container">
-            <table class="inv-table">
+          <!-- Tabla Mejorada -->
+          <div class="inv-table-container-enhanced">
+            <table class="inv-table-modern">
               <thead>
                 <tr>
-                  <th>SKU</th>
-                  <th>Producto</th>
-                  <th>Categoría</th>
-                  <th>Stock Actual</th>
-                  <th>Stock Mínimo</th>
-                  <th>Costo Base</th>
-                  <th>Precio Sugerido</th>
-                  <th>Acciones</th>
+                  <th style="width: 50px;">
+                    <input type="checkbox" onchange="toggleSelectAllProductos(this)" title="Seleccionar todos">
+                  </th>
+                  <th style="width: 120px;">SKU</th>
+                  <th style="min-width: 250px;">Producto</th>
+                  <th style="width: 150px;">Categoría</th>
+                  <th style="width: 100px; text-align: center;">Stock</th>
+                  <th style="width: 100px; text-align: center;">Stock Mín.</th>
+                  <th style="width: 120px; text-align: right;">Costo</th>
+                  <th style="width: 120px; text-align: right;">Precio</th>
+                  <th style="width: 150px; text-align: center;">Acciones</th>
                 </tr>
               </thead>
               <tbody id="productosTableBody">
@@ -703,14 +1093,13 @@ async function loadProductos(container) {
       `;
       
       // Search functionality
-      document.getElementById("searchProductos").addEventListener("input", (e) => {
-        const query = e.target.value.toLowerCase();
-        const filtered = productosData.filter(p => 
-          p.nombre?.toLowerCase().includes(query) ||
-          p.sku?.toLowerCase().includes(query) ||
-          p.categoria?.toLowerCase().includes(query)
-        );
-        document.getElementById("productosTableBody").innerHTML = renderProductosTable(filtered);
+      const searchInput = document.getElementById("searchProductos");
+      const clearButton = container.querySelector(".inv-search-clear");
+      
+      searchInput.addEventListener("input", (e) => {
+        const query = e.target.value.toLowerCase().trim();
+        clearButton.style.display = query ? 'flex' : 'none';
+        applyProductoFilters();
       });
     }
     
@@ -724,12 +1113,12 @@ async function loadProductos(container) {
 function renderProductosCards(productos) {
   if (productos.length === 0) {
     return `
-      <div class="inv-empty-state-mobile">
+      <div class="inv-empty-state-modern">
         <div class="inv-empty-state-icon">📦</div>
-        <h3 class="inv-empty-state-title">No hay productos</h3>
-        <p class="inv-empty-state-text">Comienza agregando tu primer producto al inventario</p>
+        <div class="inv-empty-state-title">No hay productos</div>
+        <div class="inv-empty-state-description">Comienza agregando tu primer producto al inventario</div>
         <button class="inv-btn inv-btn-primary" onclick="openNewProduct()">
-          ➕ Crear Producto
+          ➕ Agregar Producto
         </button>
       </div>
     `;
@@ -737,72 +1126,125 @@ function renderProductosCards(productos) {
   
   return productos.map(p => {
     const stockBajo = parseFloat(p.stock_actual) < parseFloat(p.stock_minimo);
-    const stockCritico = parseFloat(p.stock_actual) === 0;
-    const stockWarning = parseFloat(p.stock_actual) <= parseFloat(p.stock_minimo) * 1.5 && !stockCritico;
+    const sinStock = parseFloat(p.stock_actual) === 0;
+    const stockWarning = parseFloat(p.stock_actual) <= parseFloat(p.stock_minimo) * 1.5 && !sinStock && !stockBajo;
     
-    let stockClass = 'stock-ok';
-    let cardClass = '';
+    let stockStatus = 'success';
+    let stockIcon = '✅';
+    let stockLabel = 'Stock OK';
     
-    if (stockCritico) {
-      stockClass = 'stock-danger';
-      cardClass = 'low-stock';
+    if (sinStock) {
+      stockStatus = 'danger';
+      stockIcon = '📭';
+      stockLabel = 'Sin Stock';
     } else if (stockBajo) {
-      stockClass = 'stock-danger';
-      cardClass = 'low-stock';
+      stockStatus = 'danger';
+      stockIcon = '⚠️';
+      stockLabel = 'Stock Bajo';
     } else if (stockWarning) {
-      stockClass = 'stock-warning';
-      cardClass = 'warning-stock';
+      stockStatus = 'warning';
+      stockIcon = '⚡';
+      stockLabel = 'Bajo Pronto';
     }
     
+    const margen = parseFloat(p.precio_sugerido) > 0 
+      ? ((parseFloat(p.precio_sugerido) - parseFloat(p.costo_unitario_base)) / parseFloat(p.precio_sugerido) * 100).toFixed(1)
+      : 0;
+    
     return `
-      <div class="inv-product-card ${cardClass}" onclick="openProductDetail(${p.id})">
-        <!-- Header -->
-        <div class="inv-product-card-header">
-          <div class="inv-product-card-title-section">
-            <h3 class="inv-product-card-title">${p.nombre}</h3>
-            <div class="inv-product-card-subtitle">
-              <span class="inv-product-card-sku">${p.sku}</span>
-              ${p.marca ? `<span>• ${p.marca}</span>` : ''}
+      <div class="inv-producto-card-modern" onclick="openProductDetail(${p.id})">
+        <!-- Imagen/Icono del Producto -->
+        <div class="inv-producto-card-image">
+          <div class="inv-producto-placeholder">
+            <span class="inv-producto-placeholder-icon">📦</span>
+          </div>
+          <div class="inv-producto-stock-badge inv-stock-badge-${stockStatus}">
+            <span class="inv-stock-badge-icon">${stockIcon}</span>
+            <span class="inv-stock-badge-value">${p.stock_actual}</span>
+          </div>
+        </div>
+        
+        <!-- Contenido del Producto -->
+        <div class="inv-producto-card-content">
+          <!-- Header -->
+          <div class="inv-producto-card-header">
+            <div>
+              <h3 class="inv-producto-card-title">${p.nombre}</h3>
+              <div class="inv-producto-card-meta">
+                <span class="inv-producto-sku">${p.sku || '-'}</span>
+                ${p.marca ? `<span class="inv-producto-meta-dot">•</span><span>${p.marca}</span>` : ''}
+              </div>
+            </div>
+            ${p.categoria ? `
+              <span class="inv-producto-categoria-badge">${p.categoria}</span>
+            ` : ''}
+          </div>
+          
+          <!-- Info Grid -->
+          <div class="inv-producto-info-grid-modern">
+            <div class="inv-producto-info-item-modern">
+              <span class="inv-producto-info-icon">📊</span>
+              <div>
+                <div class="inv-producto-info-label">Stock Actual</div>
+                <div class="inv-producto-info-value inv-text-${stockStatus}">${p.stock_actual} unidades</div>
+              </div>
+            </div>
+            
+            <div class="inv-producto-info-item-modern">
+              <span class="inv-producto-info-icon">⚡</span>
+              <div>
+                <div class="inv-producto-info-label">Stock Mínimo</div>
+                <div class="inv-producto-info-value">${p.stock_minimo} unidades</div>
+              </div>
+            </div>
+            
+            <div class="inv-producto-info-item-modern">
+              <span class="inv-producto-info-icon">💵</span>
+              <div>
+                <div class="inv-producto-info-label">Costo Base</div>
+                <div class="inv-producto-info-value">${formatCurrency(p.costo_unitario_base)}</div>
+              </div>
+            </div>
+            
+            <div class="inv-producto-info-item-modern">
+              <span class="inv-producto-info-icon">💰</span>
+              <div>
+                <div class="inv-producto-info-label">Precio Venta</div>
+                <div class="inv-producto-info-value inv-text-success">${formatCurrency(p.precio_sugerido)}</div>
+              </div>
             </div>
           </div>
           
-          <div class="inv-product-stock-badge">
-            <div class="inv-stock-number ${stockClass}">${p.stock_actual}</div>
-            <div class="inv-stock-label">En Stock</div>
-          </div>
-        </div>
-        
-        <!-- Body -->
-        <div class="inv-product-card-body">
-          <div class="inv-product-info-item">
-            <div class="inv-product-info-label">Categoría</div>
-            <div class="inv-product-info-value">${p.categoria || 'Sin categoría'}</div>
+          <!-- Margen -->
+          <div class="inv-producto-margen">
+            <div class="inv-producto-margen-label">Margen de ganancia</div>
+            <div class="inv-producto-margen-bar">
+              <div class="inv-producto-margen-fill" style="width: ${Math.min(parseFloat(margen), 100)}%"></div>
+            </div>
+            <div class="inv-producto-margen-value">${margen}%</div>
           </div>
           
-          <div class="inv-product-info-item">
-            <div class="inv-product-info-label">Stock Mínimo</div>
-            <div class="inv-product-info-value">${p.stock_minimo}</div>
+          <!-- Footer con Acciones -->
+          <div class="inv-producto-card-footer">
+            <button class="inv-btn-action-modern inv-btn-action-primary" onclick="event.stopPropagation(); editProducto(${p.id})" title="Editar">
+              <span class="inv-btn-action-icon">✏️</span>
+              <span class="inv-btn-action-label">Editar</span>
+            </button>
+            
+            <button class="inv-btn-action-modern" onclick="event.stopPropagation(); openAssociateBarcode(${p.id})" title="Código de Barras">
+              <span class="inv-btn-action-icon">🏷️</span>
+              <span class="inv-btn-action-label">Código</span>
+            </button>
+            
+            <button class="inv-btn-action-modern" onclick="event.stopPropagation(); adjustStock(${p.id})" title="Ajustar Stock">
+              <span class="inv-btn-action-icon">📊</span>
+              <span class="inv-btn-action-label">Stock</span>
+            </button>
+            
+            <button class="inv-btn-action-modern" onclick="event.stopPropagation(); openProductActions(${p.id})" title="Más opciones">
+              <span class="inv-btn-action-icon">⋯</span>
+            </button>
           </div>
-          
-          <div class="inv-product-info-item">
-            <div class="inv-product-info-label">Costo Base</div>
-            <div class="inv-product-info-value">${formatCurrency(p.costo_unitario_base)}</div>
-          </div>
-          
-          <div class="inv-product-info-item">
-            <div class="inv-product-info-label">Precio Sugerido</div>
-            <div class="inv-product-info-value price">${formatCurrency(p.precio_sugerido)}</div>
-          </div>
-        </div>
-        
-        <!-- Footer -->
-        <div class="inv-product-card-footer" onclick="event.stopPropagation();">
-          <button class="inv-product-action-btn primary" onclick="editProducto(${p.id})" title="Editar">
-            ✏️ Editar
-          </button>
-          <button class="inv-product-action-btn secondary" onclick="openProductActions(${p.id})" title="Más acciones">
-            ⋯ Más
-          </button>
         </div>
       </div>
     `;
@@ -949,39 +1391,213 @@ function openProductActions(id) {
 
 function renderProductosTable(productos) {
   if (productos.length === 0) {
-    return '<tr><td colspan="8" style="text-align: center; padding: 3rem; color: var(--inv-text-tertiary);">📦 No hay productos registrados</td></tr>';
+    return '<tr><td colspan="9" class="inv-empty-table-message">📦 No hay productos que mostrar</td></tr>';
   }
   
   return productos.map(p => {
-    const stockBajo = p.stock_actual < p.stock_minimo;
+    const stockBajo = parseFloat(p.stock_actual) < parseFloat(p.stock_minimo);
+    const sinStock = parseFloat(p.stock_actual) === 0;
+    
+    let stockBadgeClass = 'inv-badge-success';
+    let stockIcon = '';
+    
+    if (sinStock) {
+      stockBadgeClass = 'inv-badge-danger';
+      stockIcon = '📭';
+    } else if (stockBajo) {
+      stockBadgeClass = 'inv-badge-danger';
+      stockIcon = '⚠️';
+    }
+    
     return `
       <tr>
-        <td><code style="background: var(--inv-bg-secondary); padding: 0.25rem 0.5rem; border-radius: 0.375rem; font-size: 0.875rem; font-weight: 600;">${p.sku}</code></td>
+        <td style="text-align: center;">
+          <input type="checkbox" class="producto-checkbox" data-id="${p.id}">
+        </td>
         <td>
-          <div>
-            <strong style="display: block; margin-bottom: 0.25rem;">${p.nombre}</strong>
-            ${p.marca ? `<small style="color: var(--inv-text-tertiary);">${p.marca}${p.modelo ? ' ' + p.modelo : ''}</small>` : ''}
+          <code class="inv-table-code">${p.sku || '-'}</code>
+        </td>
+        <td>
+          <div class="inv-table-producto-info">
+            <strong class="inv-table-producto-nombre">${p.nombre}</strong>
+            ${p.marca ? `<small class="inv-table-producto-marca">${p.marca}${p.modelo ? ' ' + p.modelo : ''}</small>` : ''}
           </div>
         </td>
-        <td><span class="inv-badge-info">${p.categoria || 'Sin categoría'}</span></td>
         <td>
-          <span class="inv-badge ${stockBajo ? 'inv-badge-danger' : 'inv-badge-success'}">
-            ${p.stock_actual} ${stockBajo ? '⚠️' : ''}
+          <span class="inv-badge-info">${p.categoria || 'Sin categoría'}</span>
+        </td>
+        <td style="text-align: center;">
+          <span class="inv-badge ${stockBadgeClass}">
+            ${p.stock_actual} ${stockIcon}
           </span>
         </td>
-        <td>${p.stock_minimo}</td>
-        <td><strong>${formatCurrency(p.costo_unitario_base)}</strong></td>
-        <td><strong style="color: var(--inv-success);">${formatCurrency(p.precio_sugerido)}</strong></td>
-        <td>
-          <div style="display: flex; gap: 0.5rem;">
-            <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="viewProducto(${p.id})" title="Ver detalles">👁️</button>
-            <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="editProducto(${p.id})" title="Editar">✏️</button>
-            <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="openAssociateBarcode(${p.id})" title="Código de barras">🏷️</button>
+        <td style="text-align: center;">
+          <span class="inv-table-stock-min">${p.stock_minimo}</span>
+        </td>
+        <td style="text-align: right;">
+          <strong class="inv-table-costo">${formatCurrency(p.costo_unitario_base)}</strong>
+        </td>
+        <td style="text-align: right;">
+          <strong class="inv-table-precio">${formatCurrency(p.precio_sugerido)}</strong>
+        </td>
+        <td style="text-align: center;">
+          <div class="inv-table-actions">
+            <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="viewProducto(${p.id})" title="Ver detalles">
+              👁️
+            </button>
+            <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="editProducto(${p.id})" title="Editar">
+              ✏️
+            </button>
+            <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="openAssociateBarcode(${p.id})" title="Código de barras">
+              🏷️
+            </button>
+            <button class="inv-btn inv-btn-icon inv-btn-secondary" onclick="adjustStock(${p.id})" title="Ajustar stock">
+              📊
+            </button>
           </div>
         </td>
       </tr>
     `;
   }).join('');
+}
+
+// Helper Functions para Productos
+function clearProductoSearch() {
+  const searchInput = document.getElementById("searchProductosMobile") || document.getElementById("searchProductos");
+  if (searchInput) {
+    searchInput.value = '';
+    searchInput.dispatchEvent(new Event('input'));
+    document.querySelectorAll('.inv-search-clear').forEach(btn => btn.style.display = 'none');
+  }
+}
+
+function filterProductosByType(type, element) {
+  // Update active state
+  document.querySelectorAll('.inv-filter-chip-modern').forEach(chip => {
+    chip.classList.remove('active');
+  });
+  if (element) element.classList.add('active');
+  
+  let filtered = productosData;
+  
+  if (type === 'low-stock') {
+    filtered = productosData.filter(p => parseFloat(p.stock_actual) < parseFloat(p.stock_minimo));
+  } else if (type === 'sin-stock') {
+    filtered = productosData.filter(p => parseFloat(p.stock_actual) === 0);
+  }
+  
+  const listContainer = document.getElementById("productosListMobile");
+  if (listContainer) {
+    listContainer.innerHTML = renderProductosCards(filtered);
+  }
+}
+
+function showCategoriaFilter() {
+  const categorias = [...new Set(productosData.map(p => p.categoria).filter(Boolean))].sort();
+  
+  const options = categorias.map(cat => `
+    <div class="inv-action-list-item" onclick="filterByCategoriaValue('${cat}'); hideModal();">
+      <div class="inv-action-list-icon">🏷️</div>
+      <div class="inv-action-list-content">
+        <div class="inv-action-list-title">${cat}</div>
+        <div class="inv-action-list-subtitle">${productosData.filter(p => p.categoria === cat).length} productos</div>
+      </div>
+    </div>
+  `).join('');
+  
+  showModal('Filtrar por Categoría', `
+    <div class="inv-action-list">
+      <div class="inv-action-list-item" onclick="filterByCategoriaValue(''); hideModal();">
+        <div class="inv-action-list-icon">📦</div>
+        <div class="inv-action-list-content">
+          <div class="inv-action-list-title">Todas las categorías</div>
+          <div class="inv-action-list-subtitle">${productosData.length} productos</div>
+        </div>
+      </div>
+      ${options}
+    </div>
+  `, `
+    <button type="button" class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
+  `);
+}
+
+function filterByCategoriaValue(categoria) {
+  let filtered = categoria ? productosData.filter(p => p.categoria === categoria) : productosData;
+  
+  const listContainer = document.getElementById("productosListMobile");
+  if (listContainer) {
+    listContainer.innerHTML = renderProductosCards(filtered);
+  }
+  
+  // Update chip label
+  const catChip = document.querySelector('[data-filter="categoria"]');
+  if (catChip && categoria) {
+    catChip.querySelector('span:last-child').textContent = categoria;
+  }
+}
+
+function applyProductoFilters() {
+  const searchQuery = (document.getElementById("searchProductos")?.value || '').toLowerCase().trim();
+  const categoriaFilter = document.getElementById("filterCategoria")?.value || '';
+  const stockFilter = document.getElementById("filterStock")?.value || '';
+  
+  let filtered = productosData;
+  
+  // Apply search
+  if (searchQuery) {
+    filtered = filtered.filter(p => 
+      p.nombre?.toLowerCase().includes(searchQuery) ||
+      p.sku?.toLowerCase().includes(searchQuery) ||
+      p.marca?.toLowerCase().includes(searchQuery) ||
+      p.categoria?.toLowerCase().includes(searchQuery)
+    );
+  }
+  
+  // Apply categoria filter
+  if (categoriaFilter) {
+    filtered = filtered.filter(p => p.categoria === categoriaFilter);
+  }
+  
+  // Apply stock filter
+  if (stockFilter === 'sin-stock') {
+    filtered = filtered.filter(p => parseFloat(p.stock_actual) === 0);
+  } else if (stockFilter === 'stock-bajo') {
+    filtered = filtered.filter(p => parseFloat(p.stock_actual) < parseFloat(p.stock_minimo) && parseFloat(p.stock_actual) > 0);
+  } else if (stockFilter === 'stock-ok') {
+    filtered = filtered.filter(p => parseFloat(p.stock_actual) >= parseFloat(p.stock_minimo));
+  }
+  
+  const tableBody = document.getElementById("productosTableBody");
+  if (tableBody) {
+    tableBody.innerHTML = renderProductosTable(filtered);
+  }
+}
+
+function resetProductoFilters() {
+  // Clear search
+  const searchInput = document.getElementById("searchProductos");
+  if (searchInput) searchInput.value = '';
+  
+  // Clear selects
+  const categoriaSelect = document.getElementById("filterCategoria");
+  if (categoriaSelect) categoriaSelect.value = '';
+  
+  const stockSelect = document.getElementById("filterStock");
+  if (stockSelect) stockSelect.value = '';
+  
+  // Clear button visibility
+  document.querySelectorAll('.inv-search-clear').forEach(btn => btn.style.display = 'none');
+  
+  // Reset table
+  const tableBody = document.getElementById("productosTableBody");
+  if (tableBody) {
+    tableBody.innerHTML = renderProductosTable(productosData);
+  }
+}
+
+function toggleSelectAllProductos(checkbox) {
+  const checkboxes = document.querySelectorAll('.producto-checkbox');
+  checkboxes.forEach(cb => cb.checked = checkbox.checked);
 }
 
 // ========== VISTA: VENTAS ==========
@@ -1290,47 +1906,185 @@ async function loadCompras(container) {
   
   try {
     const compras = await InventoryDB.obtenerTodasCompras();
+    const isMobile = window.innerWidth <= 768;
     
-    container.innerHTML = `
-      <div class="view-header">
-        <div class="view-actions">
-          <button class="btn-primary" onclick="openNewCompra()">
-            🛒 Nueva Compra
-          </button>
+    // Calcular estadísticas
+    const totalCompras = compras.length;
+    const totalInvertido = compras.reduce((sum, c) => sum + parseFloat(c.total || 0), 0);
+    const comprasEsteMes = compras.filter(c => {
+      const fechaCompra = new Date(c.fecha);
+      const ahora = new Date();
+      return fechaCompra.getMonth() === ahora.getMonth() && fechaCompra.getFullYear() === ahora.getFullYear();
+    }).length;
+    const proveedoresUnicos = [...new Set(compras.filter(c => c.proveedor_id).map(c => c.proveedor_id))].length;
+    
+    if (isMobile) {
+      // ========== VISTA MÓVIL: Cards tipo App Nativa ==========
+      container.innerHTML = `
+        <!-- Header Sticky con Estadísticas -->
+        <div class="inv-purchases-header-mobile">
+          <div class="inv-purchases-stats-mobile">
+            <div class="inv-stat-mini">
+              <span class="inv-stat-mini-icon">🛒</span>
+              <div>
+                <div class="inv-stat-mini-value">${totalCompras}</div>
+                <div class="inv-stat-mini-label">Compras</div>
+              </div>
+            </div>
+            <div class="inv-stat-mini">
+              <span class="inv-stat-mini-icon">💰</span>
+              <div>
+                <div class="inv-stat-mini-value">${formatCurrencyShort(totalInvertido)}</div>
+                <div class="inv-stat-mini-label">Invertido</div>
+              </div>
+            </div>
+            <div class="inv-stat-mini">
+              <span class="inv-stat-mini-icon">📅</span>
+              <div>
+                <div class="inv-stat-mini-value">${comprasEsteMes}</div>
+                <div class="inv-stat-mini-label">Este mes</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Buscador y filtros -->
+          <div class="inv-search-bar-mobile">
+            <span class="inv-search-icon-mobile">🔍</span>
+            <input 
+              type="search" 
+              id="searchComprasMobile" 
+              placeholder="Buscar compra..." 
+              class="inv-search-input-mobile"
+            >
+          </div>
+          
+          <div class="inv-filters-mobile">
+            <select id="filterProveedorMobile" class="inv-filter-select-mobile">
+              <option value="">Todos los proveedores</option>
+              ${[...new Set(compras.filter(c => c.proveedor?.nombre).map(c => c.proveedor.nombre))]
+                .map(nombre => `<option value="${nombre}">${nombre}</option>`).join('')}
+            </select>
+            <select id="filterMesMobile" class="inv-filter-select-mobile">
+              <option value="">Todos los periodos</option>
+              <option value="este-mes">Este mes</option>
+              <option value="ultimo-mes">Último mes</option>
+              <option value="ultimos-3-meses">Últimos 3 meses</option>
+            </select>
+          </div>
         </div>
-      </div>
+        
+        <!-- Lista de Compras -->
+        <div class="inv-purchases-list-mobile" id="purchasesList">
+          ${renderComprasCardsMobile(compras)}
+        </div>
+        
+        <!-- Estado vacío -->
+        <div class="inv-empty-state-mobile" id="emptyStatePurchases" style="display: none;">
+          <div class="inv-empty-icon">🛒</div>
+          <h3 class="inv-empty-title">No se encontraron compras</h3>
+          <p class="inv-empty-text">Intenta ajustar los filtros de búsqueda</p>
+        </div>
+        
+        <!-- FAB -->
+        <button class="inv-fab inv-fab-extended inv-fab-purchases" onclick="openNewCompra()">
+          <span>🛒</span>
+          <span class="inv-fab-text">Nueva Compra</span>
+        </button>
+      `;
       
-      <div class="table-responsive">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Fecha</th>
-              <th>Proveedor</th>
-              <th>Referencia</th>
-              <th>Items</th>
-              <th>Total</th>
-              <th>Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${compras.map(c => `
-              <tr>
-                <td><code>#${c.id}</code></td>
-                <td>${formatDate(c.fecha)}</td>
-                <td>${c.proveedor?.nombre || 'Sin proveedor'}</td>
-                <td>${c.referencia || '-'}</td>
-                <td>${c.inv_compra_items?.length || 0} items</td>
-                <td><strong>${formatCurrency(c.total)}</strong></td>
-                <td class="table-actions">
-                  <button class="btn-icon" onclick="viewCompra(${c.id})" title="Ver detalle">👁️</button>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
+      // Funcionalidad de búsqueda y filtros
+      setupComprasFiltering(compras);
+      
+    } else {
+      // ========== VISTA DESKTOP: Grid Profesional ==========
+      container.innerHTML = `
+        <div class="inv-purchases-desktop">
+          <!-- Header con Estadísticas -->
+          <div class="inv-purchases-header-desktop">
+            <div class="inv-section-title-group">
+              <h2 class="inv-section-title">🛒 Gestión de Compras</h2>
+              <p class="inv-section-subtitle">Administra tus compras de inventario y proveedores</p>
+            </div>
+            
+            <div class="inv-purchases-stats-desktop">
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">🛒</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${totalCompras}</div>
+                  <div class="inv-stat-card-mini-label">Total Compras</div>
+                </div>
+              </div>
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">💰</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${formatCurrencyShort(totalInvertido)}</div>
+                  <div class="inv-stat-card-mini-label">Invertido</div>
+                </div>
+              </div>
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">📅</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${comprasEsteMes}</div>
+                  <div class="inv-stat-card-mini-label">Este Mes</div>
+                </div>
+              </div>
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">🏭</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${proveedoresUnicos}</div>
+                  <div class="inv-stat-card-mini-label">Proveedores</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Toolbar -->
+          <div class="inv-purchases-toolbar">
+            <div class="inv-toolbar-left">
+              <div class="inv-search-container-desktop">
+                <span class="inv-search-icon">🔍</span>
+                <input 
+                  type="search" 
+                  id="searchComprasDesktop" 
+                  placeholder="Buscar por referencia, proveedor..." 
+                  class="inv-search-input-desktop"
+                >
+              </div>
+              <select id="filterProveedorDesktop" class="inv-filter-select-desktop">
+                <option value="">Todos los proveedores</option>
+                ${[...new Set(compras.filter(c => c.proveedor?.nombre).map(c => c.proveedor.nombre))]
+                  .map(nombre => `<option value="${nombre}">${nombre}</option>`).join('')}
+              </select>
+              <select id="filterMesDesktop" class="inv-filter-select-desktop">
+                <option value="">Todos los periodos</option>
+                <option value="este-mes">Este mes</option>
+                <option value="ultimo-mes">Último mes</option>
+                <option value="ultimos-3-meses">Últimos 3 meses</option>
+              </select>
+            </div>
+            <button class="inv-btn inv-btn-success" onclick="openNewCompra()">
+              🛒 Nueva Compra
+            </button>
+          </div>
+          
+          <!-- Grid de Compras -->
+          <div class="inv-purchases-grid" id="purchasesGrid">
+            ${renderComprasCardsDesktop(compras)}
+          </div>
+          
+          <!-- Estado vacío -->
+          <div class="inv-empty-state-desktop" id="emptyStatePurchasesDesktop" style="display: none;">
+            <div class="inv-empty-icon">🛒</div>
+            <h3 class="inv-empty-title">No se encontraron compras</h3>
+            <p class="inv-empty-text">Intenta ajustar los filtros de búsqueda o crear una nueva compra</p>
+            <button class="inv-btn inv-btn-primary" onclick="openNewCompra()">🛒 Nueva Compra</button>
+          </div>
+        </div>
+      `;
+      
+      // Funcionalidad de búsqueda y filtros
+      setupComprasFiltering(compras);
+    }
     
   } catch (error) {
     Logger.error("Error al cargar compras:", error);
@@ -1344,35 +2098,152 @@ async function loadProveedores(container) {
   
   try {
     proveedoresData = await InventoryDB.obtenerTodosProveedores();
+    const isMobile = window.innerWidth <= 768;
     
-    container.innerHTML = `
-      <div class="view-header">
-        <div class="view-actions">
-          <button class="btn-primary" onclick="openNewProveedor()">
-            ➕ Nuevo Proveedor
-          </button>
-        </div>
-      </div>
-      
-      <div class="proveedores-grid">
-        ${proveedoresData.map(p => `
-          <div class="proveedor-card">
-            <div class="proveedor-card-header">
-              <h3 class="proveedor-card-title">${p.nombre}</h3>
+    // Calcular estadísticas
+    const totalProveedores = proveedoresData.length;
+    const ciudadesUnicas = [...new Set(proveedoresData.map(p => p.ciudad).filter(Boolean))].length;
+    const conEmail = proveedoresData.filter(p => p.email).length;
+    const conTelefono = proveedoresData.filter(p => p.telefono).length;
+    
+    if (isMobile) {
+      // ========== VISTA MÓVIL: Cards tipo App Nativa ==========
+      container.innerHTML = `
+        <!-- Header Sticky con Estadísticas -->
+        <div class="inv-providers-header-mobile">
+          <div class="inv-providers-stats-mobile">
+            <div class="inv-stat-mini">
+              <span class="inv-stat-mini-icon">👥</span>
+              <div>
+                <div class="inv-stat-mini-value">${totalProveedores}</div>
+                <div class="inv-stat-mini-label">Proveedores</div>
+              </div>
             </div>
-            <div class="proveedor-card-body">
-              <p><strong>Contacto:</strong> ${p.contacto || '-'}</p>
-              <p><strong>Teléfono:</strong> ${p.telefono || '-'}</p>
-              <p><strong>Email:</strong> ${p.email || '-'}</p>
-              <p><strong>Ciudad:</strong> ${p.ciudad || '-'}</p>
-            </div>
-            <div class="proveedor-card-footer">
-              <button class="btn-secondary-sm" onclick="editProveedor(${p.id})">✏️ Editar</button>
+            <div class="inv-stat-mini">
+              <span class="inv-stat-mini-icon">🏙️</span>
+              <div>
+                <div class="inv-stat-mini-value">${ciudadesUnicas}</div>
+                <div class="inv-stat-mini-label">Ciudades</div>
+              </div>
             </div>
           </div>
-        `).join('')}
-      </div>
-    `;
+          
+          <!-- Buscador -->
+          <div class="inv-search-bar-mobile">
+            <span class="inv-search-icon-mobile">🔍</span>
+            <input 
+              type="search" 
+              id="searchProveedoresMobile" 
+              placeholder="Buscar proveedor..." 
+              class="inv-search-input-mobile"
+            >
+          </div>
+        </div>
+        
+        <!-- Lista de Proveedores -->
+        <div class="inv-providers-list-mobile" id="providersList">
+          ${renderProveedoresCardsMobile(proveedoresData)}
+        </div>
+        
+        <!-- FAB -->
+        <button class="inv-fab inv-fab-extended" onclick="openNewProveedor()">
+          <span>➕</span>
+          <span class="inv-fab-text">Nuevo</span>
+        </button>
+      `;
+      
+      // Funcionalidad de búsqueda
+      document.getElementById("searchProveedoresMobile").addEventListener("input", (e) => {
+        const query = e.target.value.toLowerCase();
+        const filtered = proveedoresData.filter(p => 
+          p.nombre?.toLowerCase().includes(query) ||
+          p.contacto?.toLowerCase().includes(query) ||
+          p.ciudad?.toLowerCase().includes(query) ||
+          p.telefono?.includes(query) ||
+          p.email?.toLowerCase().includes(query)
+        );
+        document.getElementById("providersList").innerHTML = renderProveedoresCardsMobile(filtered);
+      });
+      
+    } else {
+      // ========== VISTA DESKTOP: Grid Profesional ==========
+      container.innerHTML = `
+        <div class="inv-providers-desktop">
+          <!-- Header con Estadísticas -->
+          <div class="inv-providers-header-desktop">
+            <div class="inv-section-title-group">
+              <h2 class="inv-section-title">🏭 Gestión de Proveedores</h2>
+              <p class="inv-section-subtitle">Administra tu red de proveedores y contactos comerciales</p>
+            </div>
+            
+            <div class="inv-providers-stats-desktop">
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">👥</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${totalProveedores}</div>
+                  <div class="inv-stat-card-mini-label">Total</div>
+                </div>
+              </div>
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">🏙️</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${ciudadesUnicas}</div>
+                  <div class="inv-stat-card-mini-label">Ciudades</div>
+                </div>
+              </div>
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">📧</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${conEmail}</div>
+                  <div class="inv-stat-card-mini-label">Con Email</div>
+                </div>
+              </div>
+              <div class="inv-stat-card-mini">
+                <div class="inv-stat-card-mini-icon" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">📱</div>
+                <div>
+                  <div class="inv-stat-card-mini-value">${conTelefono}</div>
+                  <div class="inv-stat-card-mini-label">Con Teléfono</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Toolbar -->
+          <div class="inv-providers-toolbar">
+            <div class="inv-search-container-desktop">
+              <span class="inv-search-icon">🔍</span>
+              <input 
+                type="search" 
+                id="searchProveedoresDesktop" 
+                placeholder="Buscar por nombre, ciudad, contacto..." 
+                class="inv-search-input-desktop"
+              >
+            </div>
+            <button class="inv-btn inv-btn-success" onclick="openNewProveedor()">
+              ➕ Nuevo Proveedor
+            </button>
+          </div>
+          
+          <!-- Grid de Proveedores -->
+          <div class="inv-providers-grid" id="providersGrid">
+            ${renderProveedoresCardsDesktop(proveedoresData)}
+          </div>
+        </div>
+      `;
+      
+      // Funcionalidad de búsqueda
+      document.getElementById("searchProveedoresDesktop").addEventListener("input", (e) => {
+        const query = e.target.value.toLowerCase();
+        const filtered = proveedoresData.filter(p => 
+          p.nombre?.toLowerCase().includes(query) ||
+          p.contacto?.toLowerCase().includes(query) ||
+          p.ciudad?.toLowerCase().includes(query) ||
+          p.telefono?.includes(query) ||
+          p.email?.toLowerCase().includes(query)
+        );
+        document.getElementById("providersGrid").innerHTML = renderProveedoresCardsDesktop(filtered);
+      });
+    }
     
   } catch (error) {
     Logger.error("Error al cargar proveedores:", error);
@@ -1380,36 +2251,639 @@ async function loadProveedores(container) {
   }
 }
 
+// Renderizar cards móviles
+function renderProveedoresCardsMobile(proveedores) {
+  if (proveedores.length === 0) {
+    return `
+      <div class="inv-empty-state-mobile">
+        <div class="inv-empty-state-icon">🏭</div>
+        <h3 class="inv-empty-state-title">No hay proveedores</h3>
+        <p class="inv-empty-state-text">Comienza agregando tu primer proveedor</p>
+        <button class="inv-btn inv-btn-primary" onclick="openNewProveedor()">
+          ➕ Agregar Proveedor
+        </button>
+      </div>
+    `;
+  }
+  
+  return proveedores.map(p => {
+    const initials = getInitials(p.nombre);
+    const avatarColor = getColorFromString(p.nombre);
+    
+    return `
+      <div class="inv-provider-card-mobile">
+        <div class="inv-provider-card-header-mobile">
+          <div class="inv-provider-avatar" style="background: ${avatarColor};">
+            ${initials}
+          </div>
+          <div class="inv-provider-info-mobile">
+            <h3 class="inv-provider-name">${p.nombre}</h3>
+            ${p.ciudad ? `<span class="inv-provider-city">📍 ${p.ciudad}</span>` : ''}
+          </div>
+        </div>
+        
+        <div class="inv-provider-card-body-mobile">
+          ${p.contacto ? `
+            <div class="inv-provider-detail">
+              <span class="inv-provider-detail-icon">👤</span>
+              <span class="inv-provider-detail-text">${p.contacto}</span>
+            </div>
+          ` : ''}
+          
+          ${p.telefono ? `
+            <div class="inv-provider-detail">
+              <span class="inv-provider-detail-icon">📱</span>
+              <a href="tel:${p.telefono}" class="inv-provider-detail-link">${p.telefono}</a>
+            </div>
+          ` : ''}
+          
+          ${p.email ? `
+            <div class="inv-provider-detail">
+              <span class="inv-provider-detail-icon">📧</span>
+              <a href="mailto:${p.email}" class="inv-provider-detail-link">${p.email}</a>
+            </div>
+          ` : ''}
+        </div>
+        
+        <div class="inv-provider-card-actions-mobile">
+          ${p.telefono ? `
+            <a href="tel:${p.telefono}" class="inv-provider-action-btn inv-provider-action-call" title="Llamar">
+              📞
+            </a>
+            <a href="https://wa.me/${p.telefono.replace(/\D/g, '')}" target="_blank" class="inv-provider-action-btn inv-provider-action-whatsapp" title="WhatsApp">
+              💬
+            </a>
+          ` : ''}
+          ${p.email ? `
+            <a href="mailto:${p.email}" class="inv-provider-action-btn inv-provider-action-email" title="Email">
+              ✉️
+            </a>
+          ` : ''}
+          <button onclick="viewProveedor(${p.id})" class="inv-provider-action-btn inv-provider-action-view" title="Ver detalles">
+            👁️
+          </button>
+          <button onclick="editProveedor(${p.id})" class="inv-provider-action-btn inv-provider-action-edit" title="Editar">
+            ✏️
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// Renderizar cards desktop
+function renderProveedoresCardsDesktop(proveedores) {
+  if (proveedores.length === 0) {
+    return `
+      <div class="inv-empty-state-desktop">
+        <div class="inv-empty-state-icon">🏭</div>
+        <h3 class="inv-empty-state-title">No hay proveedores registrados</h3>
+        <p class="inv-empty-state-text">Comienza agregando proveedores para gestionar tus contactos comerciales</p>
+        <button class="inv-btn inv-btn-primary inv-btn-large" onclick="openNewProveedor()">
+          ➕ Agregar Primer Proveedor
+        </button>
+      </div>
+    `;
+  }
+  
+  return proveedores.map(p => {
+    const initials = getInitials(p.nombre);
+    const avatarColor = getColorFromString(p.nombre);
+    
+    return `
+      <div class="inv-provider-card-desktop">
+        <div class="inv-provider-card-header-desktop">
+          <div class="inv-provider-avatar-large" style="background: ${avatarColor};">
+            ${initials}
+          </div>
+          <div class="inv-provider-header-info">
+            <h3 class="inv-provider-name-desktop">${p.nombre}</h3>
+            ${p.ciudad ? `
+              <span class="inv-provider-badge">
+                <span class="inv-provider-badge-icon">📍</span>
+                ${p.ciudad}
+              </span>
+            ` : ''}
+          </div>
+        </div>
+        
+        <div class="inv-provider-card-body-desktop">
+          ${p.contacto ? `
+            <div class="inv-provider-info-row">
+              <span class="inv-provider-info-label">
+                <span class="inv-provider-info-icon">👤</span>
+                Contacto
+              </span>
+              <span class="inv-provider-info-value">${p.contacto}</span>
+            </div>
+          ` : ''}
+          
+          ${p.telefono ? `
+            <div class="inv-provider-info-row">
+              <span class="inv-provider-info-label">
+                <span class="inv-provider-info-icon">📱</span>
+                Teléfono
+              </span>
+              <a href="tel:${p.telefono}" class="inv-provider-info-link">${p.telefono}</a>
+            </div>
+          ` : ''}
+          
+          ${p.email ? `
+            <div class="inv-provider-info-row">
+              <span class="inv-provider-info-label">
+                <span class="inv-provider-info-icon">📧</span>
+                Email
+              </span>
+              <a href="mailto:${p.email}" class="inv-provider-info-link">${p.email}</a>
+            </div>
+          ` : ''}
+          
+          ${p.direccion ? `
+            <div class="inv-provider-info-row">
+              <span class="inv-provider-info-label">
+                <span class="inv-provider-info-icon">🏢</span>
+                Dirección
+              </span>
+              <span class="inv-provider-info-value-small">${p.direccion}</span>
+            </div>
+          ` : ''}
+        </div>
+        
+        <div class="inv-provider-card-footer-desktop">
+          <div class="inv-provider-quick-actions">
+            ${p.telefono ? `
+              <a href="tel:${p.telefono}" class="inv-btn-icon" title="Llamar">
+                📞
+              </a>
+              <a href="https://wa.me/${p.telefono.replace(/\D/g, '')}" target="_blank" class="inv-btn-icon" title="WhatsApp">
+                💬
+              </a>
+            ` : ''}
+            ${p.email ? `
+              <a href="mailto:${p.email}" class="inv-btn-icon" title="Email">
+                ✉️
+              </a>
+            ` : ''}
+          </div>
+          <div class="inv-provider-main-actions">
+            <button onclick="viewProveedor(${p.id})" class="inv-btn inv-btn-secondary inv-btn-sm">
+              👁️ Ver
+            </button>
+            <button onclick="editProveedor(${p.id})" class="inv-btn inv-btn-primary inv-btn-sm">
+              ✏️ Editar
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// Función auxiliar: Obtener iniciales
+function getInitials(name) {
+  if (!name) return '??';
+  const words = name.trim().split(' ');
+  if (words.length === 1) {
+    return words[0].substring(0, 2).toUpperCase();
+  }
+  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+}
+
+// Función auxiliar: Color desde string
+function getColorFromString(str) {
+  if (!str) return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+  
+  const colors = [
+    'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+    'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+    'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
+    'linear-gradient(135deg, #fa709a 0%, #fee140 100%)',
+    'linear-gradient(135deg, #30cfd0 0%, #330867 100%)',
+    'linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)',
+    'linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%)',
+    'linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%)',
+    'linear-gradient(135deg, #ff6e7f 0%, #bfe9ff 100%)',
+  ];
+  
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  
+  return colors[Math.abs(hash) % colors.length];
+}
+
+// Función para ver detalles del proveedor
+async function viewProveedor(id) {
+  try {
+    const proveedor = proveedoresData.find(p => p.id === id);
+    if (!proveedor) {
+      showToast("Proveedor no encontrado", "error");
+      return;
+    }
+    
+    const initials = getInitials(proveedor.nombre);
+    const avatarColor = getColorFromString(proveedor.nombre);
+    
+    showModal(`🏭 ${proveedor.nombre}`, `
+      <div class="inv-proveedor-detail">
+        <div class="inv-proveedor-detail-header">
+          <div class="inv-provider-avatar-large" style="background: ${avatarColor}; width: 80px; height: 80px; font-size: 2rem;">
+            ${initials}
+          </div>
+          <div style="text-align: center; margin-top: 1rem;">
+            <h2 style="margin: 0; color: var(--inv-text-primary);">${proveedor.nombre}</h2>
+            ${proveedor.ciudad ? `<p style="margin: 0.5rem 0 0 0; color: var(--inv-text-secondary);">📍 ${proveedor.ciudad}</p>` : ''}
+          </div>
+        </div>
+        
+        <div class="inv-proveedor-detail-body">
+          ${proveedor.contacto ? `
+            <div class="inv-detail-row">
+              <span class="inv-detail-label">👤 Contacto</span>
+              <span class="inv-detail-value">${proveedor.contacto}</span>
+            </div>
+          ` : ''}
+          
+          ${proveedor.telefono ? `
+            <div class="inv-detail-row">
+              <span class="inv-detail-label">📱 Teléfono</span>
+              <a href="tel:${proveedor.telefono}" class="inv-detail-link">${proveedor.telefono}</a>
+            </div>
+          ` : ''}
+          
+          ${proveedor.email ? `
+            <div class="inv-detail-row">
+              <span class="inv-detail-label">📧 Email</span>
+              <a href="mailto:${proveedor.email}" class="inv-detail-link">${proveedor.email}</a>
+            </div>
+          ` : ''}
+          
+          ${proveedor.direccion ? `
+            <div class="inv-detail-row">
+              <span class="inv-detail-label">🏢 Dirección</span>
+              <span class="inv-detail-value">${proveedor.direccion}</span>
+            </div>
+          ` : ''}
+          
+          ${proveedor.notas ? `
+            <div class="inv-detail-row" style="flex-direction: column; align-items: flex-start;">
+              <span class="inv-detail-label">📝 Notas</span>
+              <span class="inv-detail-value" style="white-space: pre-wrap; margin-top: 0.5rem;">${proveedor.notas}</span>
+            </div>
+          ` : ''}
+        </div>
+        
+        <div class="inv-proveedor-detail-actions">
+          ${proveedor.telefono ? `
+            <a href="tel:${proveedor.telefono}" class="inv-btn inv-btn-secondary" style="flex: 1;">
+              📞 Llamar
+            </a>
+            <a href="https://wa.me/${proveedor.telefono.replace(/\D/g, '')}" target="_blank" class="inv-btn inv-btn-success" style="flex: 1;">
+              💬 WhatsApp
+            </a>
+          ` : ''}
+          ${proveedor.email ? `
+            <a href="mailto:${proveedor.email}" class="inv-btn inv-btn-info" style="flex: 1;">
+              ✉️ Email
+            </a>
+          ` : ''}
+        </div>
+      </div>
+    `, `
+      <button type="button" class="btn-secondary" onclick="hideModal()">Cerrar</button>
+      <button type="button" class="btn-primary" onclick="hideModal(); editProveedor(${id})">✏️ Editar</button>
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al ver proveedor:", error);
+    showToast("Error al cargar detalles", "error");
+  }
+}
+
 // ========== VISTA: REPORTES ==========
 async function loadReportes(container) {
-  container.innerHTML = `
-    <div class="section-card">
-      <div class="section-card-header">
-        <h3 class="section-card-title">📈 Reportes</h3>
+  showLoading(container, "Cargando reportes...");
+  
+  try {
+    const isMobile = window.innerWidth <= 768;
+    
+    // Obtener datos para métricas rápidas
+    const kpis = await InventoryDB.obtenerKPIsDashboard();
+    const productos = await InventoryDB.obtenerTodosProductos();
+    const ventasHoy = await InventoryDB.obtenerTodasVentas(); // Filtrar por hoy en producción
+    
+    // Calcular métricas
+    const totalProductos = productos.length;
+    const stockBajo = productos.filter(p => parseFloat(p.stock_actual) < parseFloat(p.stock_minimo)).length;
+    const ventasHoyCount = ventasHoy.filter(v => {
+      const fecha = new Date(v.fecha);
+      const hoy = new Date();
+      return fecha.toDateString() === hoy.toDateString();
+    }).length;
+    
+    const ultimaActualizacion = new Date().toLocaleString('es-CO', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    
+    if (isMobile) {
+      // ========== VISTA MÓVIL ==========
+      container.innerHTML = `
+        <div class="inv-reports-mobile">
+          <!-- Header con métricas -->
+          <div class="inv-reports-header-mobile">
+            <div class="inv-reports-welcome">
+              <h2 class="inv-reports-title">📈 Centro de Reportes</h2>
+              <p class="inv-reports-subtitle">Analítica e informes del negocio</p>
+            </div>
+            
+            <div class="inv-reports-quick-metrics">
+              <div class="inv-quick-metric">
+                <span class="inv-quick-metric-icon">📦</span>
+                <div>
+                  <div class="inv-quick-metric-value">${totalProductos}</div>
+                  <div class="inv-quick-metric-label">Productos</div>
+                </div>
+              </div>
+              <div class="inv-quick-metric">
+                <span class="inv-quick-metric-icon" style="color: ${stockBajo > 0 ? 'var(--inv-warning)' : 'var(--inv-success)'};">
+                  ${stockBajo > 0 ? '⚠️' : '✅'}
+                </span>
+                <div>
+                  <div class="inv-quick-metric-value">${stockBajo}</div>
+                  <div class="inv-quick-metric-label">Stock Bajo</div>
+                </div>
+              </div>
+              <div class="inv-quick-metric">
+                <span class="inv-quick-metric-icon">💰</span>
+                <div>
+                  <div class="inv-quick-metric-value">${ventasHoyCount}</div>
+                  <div class="inv-quick-metric-label">Ventas Hoy</div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="inv-reports-last-update">
+              <span class="inv-last-update-icon">🕐</span>
+              <span class="inv-last-update-text">Actualizado: ${ultimaActualizacion}</span>
+            </div>
+          </div>
+          
+          <!-- Reportes por Categoría -->
+          <div class="inv-reports-content-mobile">
+            <!-- Reportes Financieros -->
+            <div class="inv-report-category-mobile">
+              <div class="inv-category-header-mobile">
+                <span class="inv-category-icon">💵</span>
+                <h3 class="inv-category-title">Reportes Financieros</h3>
+              </div>
+              <div class="inv-reports-list-mobile">
+                ${renderReportCardMobile('utilidades', '💰', 'Reporte de Utilidades', 'Análisis de ganancias y márgenes', 'success')}
+                ${renderReportCardMobile('ventasMes', '📊', 'Ventas del Mes', 'Resumen mensual de ventas', 'primary')}
+              </div>
+            </div>
+            
+            <!-- Reportes de Inventario -->
+            <div class="inv-report-category-mobile">
+              <div class="inv-category-header-mobile">
+                <span class="inv-category-icon">📦</span>
+                <h3 class="inv-category-title">Reportes de Inventario</h3>
+              </div>
+              <div class="inv-reports-list-mobile">
+                ${renderReportCardMobile('stockBajo', '⚠️', 'Stock Bajo', `${stockBajo} productos requieren atención`, 'warning')}
+                ${renderReportCardMobile('rotacion', '🔄', 'Rotación de Inventario', 'Productos más y menos vendidos', 'info')}
+                ${renderReportCardMobile('valorInventario', '💎', 'Valor del Inventario', 'Valuación total del stock', 'success')}
+              </div>
+            </div>
+            
+            <!-- Reportes de Análisis -->
+            <div class="inv-report-category-mobile">
+              <div class="inv-category-header-mobile">
+                <span class="inv-category-icon">📈</span>
+                <h3 class="inv-category-title">Análisis y Tendencias</h3>
+              </div>
+              <div class="inv-reports-list-mobile">
+                ${renderReportCardMobile('proveedores', '🏭', 'Ranking de Proveedores', 'Análisis de compras por proveedor', 'info')}
+                ${renderReportCardMobile('categorias', '🏷️', 'Ventas por Categoría', 'Productos más rentables', 'primary')}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      // ========== VISTA DESKTOP ==========
+      container.innerHTML = `
+        <div class="inv-reports-desktop">
+          <!-- Header -->
+          <div class="inv-reports-header-desktop">
+            <div class="inv-reports-welcome-desktop">
+              <h2 class="inv-reports-title-desktop">📈 Centro de Reportes e Informes</h2>
+              <p class="inv-reports-subtitle-desktop">Analítica avanzada, métricas de negocio y reportes exportables</p>
+            </div>
+            
+            <div class="inv-reports-actions-desktop">
+              <button class="inv-btn inv-btn-secondary" onclick="window.print()">
+                🖨️ Imprimir
+              </button>
+              <button class="inv-btn inv-btn-primary" onclick="showToast('Función de exportar en desarrollo', 'info')">
+                📥 Exportar Todo
+              </button>
+            </div>
+          </div>
+          
+          <!-- Métricas KPI -->
+          <div class="inv-reports-kpis-desktop">
+            <div class="inv-kpi-card-report" style="--kpi-color: #667eea;">
+              <div class="inv-kpi-card-header">
+                <span class="inv-kpi-card-icon">📦</span>
+                <span class="inv-kpi-card-trend inv-trend-up">↗ +5%</span>
+              </div>
+              <div class="inv-kpi-card-body">
+                <div class="inv-kpi-card-value">${totalProductos}</div>
+                <div class="inv-kpi-card-label">Total Productos</div>
+              </div>
+            </div>
+            
+            <div class="inv-kpi-card-report" style="--kpi-color: ${stockBajo > 0 ? '#f59e0b' : '#10b981'};">
+              <div class="inv-kpi-card-header">
+                <span class="inv-kpi-card-icon">${stockBajo > 0 ? '⚠️' : '✅'}</span>
+                <span class="inv-kpi-card-trend ${stockBajo > 0 ? 'inv-trend-down' : 'inv-trend-neutral'}">
+                  ${stockBajo > 0 ? '↘' : '→'} ${stockBajo}
+                </span>
+              </div>
+              <div class="inv-kpi-card-body">
+                <div class="inv-kpi-card-value">${stockBajo}</div>
+                <div class="inv-kpi-card-label">Stock Bajo</div>
+              </div>
+            </div>
+            
+            <div class="inv-kpi-card-report" style="--kpi-color: #f093fb;">
+              <div class="inv-kpi-card-header">
+                <span class="inv-kpi-card-icon">💰</span>
+                <span class="inv-kpi-card-trend inv-trend-up">↗ ${ventasHoyCount}</span>
+              </div>
+              <div class="inv-kpi-card-body">
+                <div class="inv-kpi-card-value">${(kpis.totalVentas || 0).toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</div>
+                <div class="inv-kpi-card-label">Ventas Totales</div>
+              </div>
+            </div>
+            
+            <div class="inv-kpi-card-report" style="--kpi-color: #43e97b;">
+              <div class="inv-kpi-card-header">
+                <span class="inv-kpi-card-icon">💵</span>
+                <span class="inv-kpi-card-trend inv-trend-up">↗ +12%</span>
+              </div>
+              <div class="inv-kpi-card-body">
+                <div class="inv-kpi-card-value">${(kpis.utilidadTotal || 0).toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</div>
+                <div class="inv-kpi-card-label">Utilidad Total</div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="inv-reports-last-update-desktop">
+            <span class="inv-last-update-icon">🕐</span>
+            <span>Última actualización: ${ultimaActualizacion}</span>
+          </div>
+          
+          <!-- Grid de Reportes -->
+          <div class="inv-reports-grid-desktop">
+            <!-- Reportes Financieros -->
+            <div class="inv-report-section-desktop">
+              <div class="inv-report-section-header">
+                <h3 class="inv-report-section-title">💵 Reportes Financieros</h3>
+              </div>
+              <div class="inv-report-cards-desktop">
+                ${renderReportCardDesktop('utilidades', '💰', 'Reporte de Utilidades', 'Análisis detallado de ganancias, márgenes y rentabilidad por producto', 'success')}
+                ${renderReportCardDesktop('ventasMes', '📊', 'Ventas del Mes', 'Resumen mensual completo con gráficos y comparativas', 'primary')}
+              </div>
+            </div>
+            
+            <!-- Reportes de Inventario -->
+            <div class="inv-report-section-desktop">
+              <div class="inv-report-section-header">
+                <h3 class="inv-report-section-title">📦 Reportes de Inventario</h3>
+              </div>
+              <div class="inv-report-cards-desktop">
+                ${renderReportCardDesktop('stockBajo', '⚠️', 'Productos con Stock Bajo', `${stockBajo} productos requieren reposición inmediata`, 'warning')}
+                ${renderReportCardDesktop('rotacion', '🔄', 'Rotación de Inventario', 'Análisis de productos más y menos vendidos con sugerencias', 'info')}
+                ${renderReportCardDesktop('valorInventario', '💎', 'Valor del Inventario', 'Valuación total del inventario actual por categorías', 'success')}
+              </div>
+            </div>
+            
+            <!-- Reportes de Análisis -->
+            <div class="inv-report-section-desktop">
+              <div class="inv-report-section-header">
+                <h3 class="inv-report-section-title">📈 Análisis y Tendencias</h3>
+              </div>
+              <div class="inv-report-cards-desktop">
+                ${renderReportCardDesktop('proveedores', '🏭', 'Ranking de Proveedores', 'Análisis de compras y desempeño por proveedor', 'info')}
+                ${renderReportCardDesktop('categorias', '🏷️', 'Análisis por Categoría', 'Ventas y rentabilidad segmentada por categorías', 'primary')}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    
+  } catch (error) {
+    Logger.error("Error al cargar reportes:", error);
+    showToast("Error al cargar reportes", "error");
+  }
+}
+
+// Renderizar card móvil
+function renderReportCardMobile(tipo, icon, title, description, variant) {
+  const variantColors = {
+    success: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+    warning: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+    primary: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    info: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+  };
+  
+  const onClick = `generarReporte('${tipo}')`;
+  
+  return `
+    <div class="inv-report-card-mobile" onclick="${onClick}">
+      <div class="inv-report-card-icon-mobile" style="background: ${variantColors[variant]};">
+        ${icon}
       </div>
-      <div class="reportes-grid">
-        <button class="report-card" onclick="generarReporteUtilidades()">
-          <div class="report-card-icon">💵</div>
-          <div class="report-card-title">Reporte de Utilidades</div>
+      <div class="inv-report-card-content-mobile">
+        <h4 class="inv-report-card-title-mobile">${title}</h4>
+        <p class="inv-report-card-description-mobile">${description}</p>
+      </div>
+      <div class="inv-report-card-action-mobile">
+        <span class="inv-report-card-arrow">→</span>
+      </div>
+    </div>
+  `;
+}
+
+// Renderizar card desktop
+function renderReportCardDesktop(tipo, icon, title, description, variant) {
+  const variantColors = {
+    success: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+    warning: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+    primary: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    info: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+  };
+  
+  const onClick = `generarReporte('${tipo}')`;
+  
+  return `
+    <div class="inv-report-card-desktop">
+      <div class="inv-report-card-header-desktop">
+        <div class="inv-report-card-icon-desktop" style="background: ${variantColors[variant]};">
+          ${icon}
+        </div>
+        <div class="inv-report-card-info-desktop">
+          <h4 class="inv-report-card-title-desktop">${title}</h4>
+          <p class="inv-report-card-description-desktop">${description}</p>
+        </div>
+      </div>
+      <div class="inv-report-card-actions-desktop">
+        <button class="inv-btn inv-btn-secondary inv-btn-sm" onclick="showToast('Función en desarrollo', 'info')">
+          👁️ Vista Previa
         </button>
-        
-        <button class="report-card" onclick="generarReporteRotacion()">
-          <div class="report-card-icon">🔄</div>
-          <div class="report-card-title">Rotación de Inventario</div>
-        </button>
-        
-        <button class="report-card" onclick="generarReporteStockBajo()">
-          <div class="report-card-icon">⚠️</div>
-          <div class="report-card-title">Productos con Stock Bajo</div>
-        </button>
-        
-        <button class="report-card" onclick="generarReporteVentasMes()">
-          <div class="report-card-icon">📊</div>
-          <div class="report-card-title">Ventas del Mes</div>
+        <button class="inv-btn inv-btn-primary inv-btn-sm" onclick="${onClick}">
+          📊 Generar
         </button>
       </div>
     </div>
   `;
+}
+
+// Función unificada para generar reportes
+async function generarReporte(tipo) {
+  switch(tipo) {
+    case 'utilidades':
+      await generarReporteUtilidades();
+      break;
+    case 'rotacion':
+      await generarReporteRotacion();
+      break;
+    case 'stockBajo':
+      await generarReporteStockBajo();
+      break;
+    case 'ventasMes':
+      await generarReporteVentasMes();
+      break;
+    case 'valorInventario':
+      await generarReporteValorInventario();
+      break;
+    case 'proveedores':
+      await generarReporteProveedores();
+      break;
+    case 'categorias':
+      await generarReporteCategorias();
+      break;
+    default:
+      showToast('Reporte no disponible', 'warning');
+  }
 }
 
 // ========== VISTA: AUDITORÍA ==========
@@ -1417,39 +2891,430 @@ async function loadAuditoria(container) {
   showLoading(container, "Cargando auditoría...");
   
   try {
-    const auditoria = await InventoryDB.obtenerAuditoria(50);
+    const auditoria = await InventoryDB.obtenerAuditoria(100);
+    const isMobile = window.innerWidth <= 768;
     
-    container.innerHTML = `
-      <div class="table-responsive">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Acción</th>
-              <th>Entidad</th>
-              <th>ID</th>
-              <th>Detalles</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${auditoria.map(a => `
-              <tr>
-                <td>${formatDateTime(a.created_at)}</td>
-                <td><code>${a.accion}</code></td>
-                <td>${a.entidad}</td>
-                <td>${a.entidad_id || '-'}</td>
-                <td><small>${JSON.stringify(a.detalles || {})}</small></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
+    if (auditoria.length === 0) {
+      container.innerHTML = `
+        <div class="inv-empty-state-${isMobile ? 'mobile' : 'desktop'}">
+          <div style="font-size: 4rem; margin-bottom: 1rem;">📋</div>
+          <h3>Sin registros de auditoría</h3>
+          <p>No hay actividad registrada en el sistema</p>
+        </div>
+      `;
+      return;
+    }
+    
+    // Calcular estadísticas
+    const stats = calcularEstadisticasAuditoria(auditoria);
+    
+    // Agrupar por día
+    const auditoriaAgrupada = agruparAuditoriaPorDia(auditoria);
+    
+    const ahora = new Date();
+    const ultimaActualizacion = ahora.toLocaleString('es-CO', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    
+    if (isMobile) {
+      // ========== VISTA MÓVIL ==========
+      container.innerHTML = `
+        <div class="inv-audit-mobile">
+          <!-- Header -->
+          <div class="inv-audit-header-mobile">
+            <div class="inv-audit-welcome">
+              <h2 class="inv-audit-title">📋 Registro de Auditoría</h2>
+              <p class="inv-audit-subtitle">Historial de actividad del sistema</p>
+            </div>
+            
+            <!-- Métricas rápidas -->
+            <div class="inv-audit-stats-mobile">
+              <div class="inv-audit-stat-card">
+                <span class="inv-audit-stat-icon">📝</span>
+                <div>
+                  <div class="inv-audit-stat-value">${stats.totalAcciones}</div>
+                  <div class="inv-audit-stat-label">Acciones</div>
+                </div>
+              </div>
+              <div class="inv-audit-stat-card">
+                <span class="inv-audit-stat-icon" style="color: var(--inv-success);">✅</span>
+                <div>
+                  <div class="inv-audit-stat-value">${stats.hoy}</div>
+                  <div class="inv-audit-stat-label">Hoy</div>
+                </div>
+              </div>
+              <div class="inv-audit-stat-card">
+                <span class="inv-audit-stat-icon" style="color: var(--inv-primary);">📊</span>
+                <div>
+                  <div class="inv-audit-stat-value">${stats.entidades}</div>
+                  <div class="inv-audit-stat-label">Entidades</div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Filtros rápidos -->
+            <div class="inv-audit-filters-mobile">
+              <button class="inv-filter-chip active" onclick="filtrarAuditoria('todos')">
+                🔍 Todos
+              </button>
+              <button class="inv-filter-chip" onclick="filtrarAuditoria('CREATE')">
+                ➕ Crear
+              </button>
+              <button class="inv-filter-chip" onclick="filtrarAuditoria('UPDATE')">
+                ✏️ Editar
+              </button>
+              <button class="inv-filter-chip" onclick="filtrarAuditoria('DELETE')">
+                🗑️ Eliminar
+              </button>
+            </div>
+            
+            <div class="inv-audit-last-update">
+              <span class="inv-last-update-icon">🕐</span>
+              <span class="inv-last-update-text">Actualizado: ${ultimaActualizacion}</span>
+            </div>
+          </div>
+          
+          <!-- Timeline de eventos -->
+          <div class="inv-audit-timeline-mobile" id="auditTimelineMobile">
+            ${Object.entries(auditoriaAgrupada).map(([fecha, eventos]) => 
+              renderTimelineDiaMobile(fecha, eventos)
+            ).join('')}
+          </div>
+        </div>
+      `;
+    } else {
+      // ========== VISTA DESKTOP ==========
+      container.innerHTML = `
+        <div class="inv-audit-desktop">
+          <!-- Header -->
+          <div class="inv-audit-header-desktop">
+            <div class="inv-audit-welcome-desktop">
+              <h2 class="inv-audit-title-desktop">📋 Registro de Auditoría del Sistema</h2>
+              <p class="inv-audit-subtitle-desktop">Trazabilidad completa de todas las operaciones y cambios realizados</p>
+            </div>
+            
+            <div class="inv-audit-actions-desktop">
+              <button class="inv-btn inv-btn-secondary" onclick="exportarAuditoria()">
+                📥 Exportar
+              </button>
+              <button class="inv-btn inv-btn-primary" onclick="location.reload()">
+                🔄 Actualizar
+              </button>
+            </div>
+          </div>
+          
+          <!-- KPIs -->
+          <div class="inv-audit-kpis-desktop">
+            <div class="inv-audit-kpi-card" style="--kpi-color: #667eea;">
+              <div class="inv-audit-kpi-icon">📝</div>
+              <div class="inv-audit-kpi-content">
+                <div class="inv-audit-kpi-value">${stats.totalAcciones}</div>
+                <div class="inv-audit-kpi-label">Total Acciones</div>
+              </div>
+            </div>
+            
+            <div class="inv-audit-kpi-card" style="--kpi-color: #10b981;">
+              <div class="inv-audit-kpi-icon">✅</div>
+              <div class="inv-audit-kpi-content">
+                <div class="inv-audit-kpi-value">${stats.hoy}</div>
+                <div class="inv-audit-kpi-label">Actividad Hoy</div>
+              </div>
+            </div>
+            
+            <div class="inv-audit-kpi-card" style="--kpi-color: #f59e0b;">
+              <div class="inv-audit-kpi-icon">📊</div>
+              <div class="inv-audit-kpi-content">
+                <div class="inv-audit-kpi-value">${stats.entidades}</div>
+                <div class="inv-audit-kpi-label">Entidades Diferentes</div>
+              </div>
+            </div>
+            
+            <div class="inv-audit-kpi-card" style="--kpi-color: #3b82f6;">
+              <div class="inv-audit-kpi-icon">🔄</div>
+              <div class="inv-audit-kpi-content">
+                <div class="inv-audit-kpi-value">${stats.ultimaSemana}</div>
+                <div class="inv-audit-kpi-label">Última Semana</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Filtros -->
+          <div class="inv-audit-filters-desktop">
+            <div class="inv-filter-group">
+              <button class="inv-filter-btn active" onclick="filtrarAuditoria('todos')">
+                🔍 Todas las Acciones
+              </button>
+              <button class="inv-filter-btn" onclick="filtrarAuditoria('CREATE')">
+                ➕ Creaciones
+              </button>
+              <button class="inv-filter-btn" onclick="filtrarAuditoria('UPDATE')">
+                ✏️ Actualizaciones
+              </button>
+              <button class="inv-filter-btn" onclick="filtrarAuditoria('DELETE')">
+                🗑️ Eliminaciones
+              </button>
+              <button class="inv-filter-btn" onclick="filtrarAuditoria('SCAN')">
+                📷 Escaneos
+              </button>
+            </div>
+            
+            <div class="inv-audit-info">
+              <span class="inv-last-update-icon">🕐</span>
+              <span>Última actualización: ${ultimaActualizacion}</span>
+            </div>
+          </div>
+          
+          <!-- Timeline de eventos -->
+          <div class="inv-audit-timeline-desktop" id="auditTimelineDesktop">
+            ${Object.entries(auditoriaAgrupada).map(([fecha, eventos]) => 
+              renderTimelineDiaDesktop(fecha, eventos)
+            ).join('')}
+          </div>
+        </div>
+      `;
+    }
     
   } catch (error) {
     Logger.error("Error al cargar auditoría:", error);
     showToast("Error al cargar auditoría", "error");
   }
+}
+
+// Funciones auxiliares de auditoría
+function calcularEstadisticasAuditoria(auditoria) {
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  
+  const haceSemana = new Date();
+  haceSemana.setDate(haceSemana.getDate() - 7);
+  
+  const entidadesUnicas = new Set(auditoria.map(a => a.entidad));
+  
+  return {
+    totalAcciones: auditoria.length,
+    hoy: auditoria.filter(a => new Date(a.created_at) >= hoy).length,
+    ultimaSemana: auditoria.filter(a => new Date(a.created_at) >= haceSemana).length,
+    entidades: entidadesUnicas.size
+  };
+}
+
+function agruparAuditoriaPorDia(auditoria) {
+  const grupos = {};
+  
+  auditoria.forEach(registro => {
+    const fecha = new Date(registro.created_at);
+    const fechaKey = fecha.toLocaleDateString('es-CO', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    
+    if (!grupos[fechaKey]) {
+      grupos[fechaKey] = [];
+    }
+    grupos[fechaKey].push(registro);
+  });
+  
+  return grupos;
+}
+
+function getAuditActionIcon(accion) {
+  const icons = {
+    'CREATE': '➕',
+    'UPDATE': '✏️',
+    'DELETE': '🗑️',
+    'SCAN': '📷',
+    'SELL': '💰',
+    'ASSOCIATE': '🔗',
+    'LOGIN': '🔐',
+    'LOGOUT': '👋'
+  };
+  return icons[accion] || '📝';
+}
+
+function getAuditActionColor(accion) {
+  const colors = {
+    'CREATE': 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+    'UPDATE': 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+    'DELETE': 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+    'SCAN': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    'SELL': 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+    'ASSOCIATE': 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+    'LOGIN': 'linear-gradient(135deg, #06b6d4 0%, #0891b2 100%)',
+    'LOGOUT': 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)'
+  };
+  return colors[accion] || 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+}
+
+function getAuditActionLabel(accion) {
+  const labels = {
+    'CREATE': 'Creación',
+    'UPDATE': 'Actualización',
+    'DELETE': 'Eliminación',
+    'SCAN': 'Escaneo',
+    'SELL': 'Venta',
+    'ASSOCIATE': 'Asociación',
+    'LOGIN': 'Inicio de sesión',
+    'LOGOUT': 'Cierre de sesión'
+  };
+  return labels[accion] || accion;
+}
+
+function getEntityIcon(entidad) {
+  const icons = {
+    'producto': '📦',
+    'productos': '📦',
+    'venta': '💰',
+    'ventas': '💰',
+    'proveedor': '🏭',
+    'proveedores': '🏭',
+    'codigo_barras': '🏷️',
+    'codigos_barras': '🏷️',
+    'usuario': '👤',
+    'usuarios': '👤'
+  };
+  return icons[entidad?.toLowerCase()] || '📄';
+}
+
+function renderTimelineDiaMobile(fecha, eventos) {
+  const esHoy = fecha.includes(new Date().toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }));
+  
+  return `
+    <div class="inv-audit-day-group-mobile">
+      <div class="inv-audit-day-header-mobile">
+        <span class="inv-audit-day-badge ${esHoy ? 'today' : ''}">${esHoy ? '📍 ' : ''}${fecha}</span>
+        <span class="inv-audit-day-count">${eventos.length} eventos</span>
+      </div>
+      
+      <div class="inv-audit-events-mobile">
+        ${eventos.map(evento => `
+          <div class="inv-audit-event-card-mobile" data-action="${evento.accion}">
+            <div class="inv-audit-event-icon-mobile" style="background: ${getAuditActionColor(evento.accion)};">
+              ${getAuditActionIcon(evento.accion)}
+            </div>
+            <div class="inv-audit-event-content-mobile">
+              <div class="inv-audit-event-header-mobile">
+                <span class="inv-audit-event-title">${getAuditActionLabel(evento.accion)}</span>
+                <span class="inv-audit-event-time">${new Date(evento.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+              <div class="inv-audit-event-entity">
+                ${getEntityIcon(evento.entidad)} ${evento.entidad}
+                ${evento.entidad_id ? `<span class="inv-audit-event-id">#${evento.entidad_id}</span>` : ''}
+              </div>
+              ${evento.detalles && Object.keys(evento.detalles).length > 0 ? `
+                <div class="inv-audit-event-details">
+                  ${formatearDetallesAuditoria(evento.detalles)}
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderTimelineDiaDesktop(fecha, eventos) {
+  const esHoy = fecha.includes(new Date().toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }));
+  
+  return `
+    <div class="inv-audit-day-group-desktop">
+      <div class="inv-audit-day-header-desktop">
+        <span class="inv-audit-day-badge-desktop ${esHoy ? 'today' : ''}">${esHoy ? '📍 ' : ''}${fecha}</span>
+        <div class="inv-audit-day-line"></div>
+        <span class="inv-audit-day-count-desktop">${eventos.length} eventos registrados</span>
+      </div>
+      
+      <div class="inv-audit-events-grid-desktop">
+        ${eventos.map(evento => `
+          <div class="inv-audit-event-card-desktop" data-action="${evento.accion}">
+            <div class="inv-audit-event-header-desktop">
+              <div class="inv-audit-event-icon-desktop" style="background: ${getAuditActionColor(evento.accion)};">
+                ${getAuditActionIcon(evento.accion)}
+              </div>
+              <div class="inv-audit-event-info">
+                <div class="inv-audit-event-title-desktop">${getAuditActionLabel(evento.accion)}</div>
+                <div class="inv-audit-event-meta">
+                  ${getEntityIcon(evento.entidad)} ${evento.entidad}
+                  ${evento.entidad_id ? `<span class="inv-audit-event-id-desktop">#${evento.entidad_id}</span>` : ''}
+                </div>
+              </div>
+              <div class="inv-audit-event-time-desktop">
+                ${new Date(evento.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+            ${evento.detalles && Object.keys(evento.detalles).length > 0 ? `
+              <div class="inv-audit-event-details-desktop">
+                ${formatearDetallesAuditoria(evento.detalles)}
+              </div>
+            ` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function formatearDetallesAuditoria(detalles) {
+  if (!detalles || typeof detalles !== 'object') return '';
+  
+  const entries = Object.entries(detalles);
+  if (entries.length === 0) return '';
+  
+  return entries.map(([key, value]) => {
+    let displayValue = value;
+    if (typeof value === 'object') {
+      displayValue = JSON.stringify(value);
+    } else if (typeof value === 'string' && value.length > 50) {
+      displayValue = value.substring(0, 47) + '...';
+    }
+    
+    return `<div class="inv-audit-detail-item">
+      <span class="inv-audit-detail-key">${key}:</span>
+      <span class="inv-audit-detail-value">${displayValue}</span>
+    </div>`;
+  }).join('');
+}
+
+function filtrarAuditoria(tipo) {
+  // Actualizar botones activos
+  document.querySelectorAll('.inv-filter-chip, .inv-filter-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  event.target.classList.add('active');
+  
+  // Filtrar eventos
+  const eventos = document.querySelectorAll('[data-action]');
+  eventos.forEach(evento => {
+    if (tipo === 'todos') {
+      evento.style.display = '';
+    } else {
+      if (evento.dataset.action === tipo) {
+        evento.style.display = '';
+      } else {
+        evento.style.display = 'none';
+      }
+    }
+  });
+  
+  // Ocultar días sin eventos visibles
+  const grupos = document.querySelectorAll('.inv-audit-day-group-mobile, .inv-audit-day-group-desktop');
+  grupos.forEach(grupo => {
+    const eventosVisibles = Array.from(grupo.querySelectorAll('[data-action]')).filter(e => e.style.display !== 'none');
+    if (eventosVisibles.length === 0) {
+      grupo.style.display = 'none';
+    } else {
+      grupo.style.display = '';
+    }
+  });
+}
+
+function exportarAuditoria() {
+  showToast('Función de exportación en desarrollo', 'info');
 }
 
 // ========== FUNCIONES DE PRODUCTOS ==========
@@ -1459,60 +3324,70 @@ async function openNewProduct() {
   
   showModal("➕ Nuevo Producto", `
     <form id="formNewProduct" class="form-vertical">
+      <div class="inv-alert inv-alert-info" style="margin-bottom: 1rem;">
+        <strong>ℹ️ Flujo de registro:</strong><br>
+        1. Registra primero la información del producto<br>
+        2. Luego podrás escanear códigos de barras para asociarlos<br>
+        3. El stock aumentará automáticamente con cada código escaneado
+      </div>
+      
       <div class="form-row">
         <div class="form-group">
-          <label>Nombre *</label>
-          <input type="text" name="nombre" required class="form-input">
+          <label>Nombre del Producto *</label>
+          <input type="text" name="nombre" required class="form-input" placeholder="Ej: Camisa Polo Azul">
         </div>
       </div>
       
       <div class="form-row">
         <div class="form-group">
           <label>Categoría</label>
-          <input type="text" name="categoria" class="form-input" list="categorias">
+          <input type="text" name="categoria" class="form-input" list="categorias" placeholder="Ej: Ropa">
           <datalist id="categorias">
             <option value="Electrónica">
             <option value="Hogar">
             <option value="Ropa">
             <option value="Alimentos">
+            <option value="Accesorios">
+            <option value="Calzado">
           </datalist>
         </div>
         <div class="form-group">
           <label>Marca</label>
-          <input type="text" name="marca" class="form-input">
+          <input type="text" name="marca" class="form-input" placeholder="Ej: Nike">
         </div>
       </div>
       
       <div class="form-row">
         <div class="form-group">
-          <label>Stock Inicial *</label>
-          <input type="number" name="stock_actual" required min="0" step="0.01" class="form-input">
-        </div>
-        <div class="form-group">
-          <label>Stock Mínimo</label>
-          <input type="number" name="stock_minimo" min="0" step="0.01" class="form-input" value="5">
+          <label>Stock Mínimo Alerta</label>
+          <input type="number" name="stock_minimo" min="0" step="1" class="form-input" value="5" placeholder="Cantidad mínima antes de alertar">
+          <small style="color: var(--gray-600); font-size: 0.875rem;">Se te notificará cuando el stock sea menor a este valor</small>
         </div>
       </div>
       
       <div class="form-row">
         <div class="form-group">
           <label>Costo Unitario *</label>
-          <input type="number" name="costo_unitario_base" required min="0" step="0.01" class="form-input">
+          <input type="number" name="costo_unitario_base" required min="0" step="0.01" class="form-input" placeholder="0.00">
+          <small style="color: var(--gray-600); font-size: 0.875rem;">Costo por unidad del producto</small>
         </div>
         <div class="form-group">
           <label>Gastos Asociados</label>
-          <input type="number" name="gastos_asociados_base" min="0" step="0.01" class="form-input" value="0">
+          <input type="number" name="gastos_asociados_base" min="0" step="0.01" class="form-input" value="0" placeholder="0.00">
+          <small style="color: var(--gray-600); font-size: 0.875rem;">Envío, comisiones, impuestos, etc.</small>
         </div>
       </div>
       
       <div class="form-row">
         <div class="form-group">
-          <label>Margen (%) *</label>
-          <input type="number" name="margen_sugerido_pct" required min="0" step="0.01" class="form-input" value="30">
+          <label>Margen de Ganancia (%) *</label>
+          <input type="number" name="margen_sugerido_pct" required min="0" step="0.01" class="form-input" value="30" placeholder="30">
+          <small style="color: var(--gray-600); font-size: 0.875rem;">Porcentaje de ganancia sobre el costo total</small>
         </div>
         <div class="form-group">
-          <label>Precio Sugerido (calculado)</label>
-          <input type="number" id="precioCalculado" readonly class="form-input" style="background: var(--gray-100);">
+          <label>Precio de Venta Sugerido</label>
+          <input type="number" id="precioCalculado" readonly class="form-input" style="background: var(--gray-100); font-weight: 600; color: var(--success);" placeholder="Se calculará automáticamente">
+          <small style="color: var(--gray-600); font-size: 0.875rem;">Precio calculado incluyendo margen</small>
         </div>
       </div>
       
@@ -1525,21 +3400,13 @@ async function openNewProduct() {
       </div>
       
       <div class="form-group">
-        <label>Ubicación</label>
-        <input type="text" name="ubicacion" class="form-input" placeholder="Ej: Bodega A - Estante 3">
-      </div>
-      
-      <div class="form-group">
-        <label>Código de Barras (opcional)</label>
-        <div style="display: flex; gap: 0.5rem;">
-          <input type="text" id="codigoBarras" class="form-input" placeholder="Escanear o ingresar">
-          <button type="button" class="btn-secondary" onclick="scannerMode='registroTemporal'; openScanner()">📷</button>
-        </div>
+        <label>Ubicación en Bodega</label>
+        <input type="text" name="ubicacion" class="form-input" placeholder="Ej: Bodega A - Estante 3 - Nivel 2">
       </div>
     </form>
   `, `
     <button type="button" class="btn-secondary" onclick="hideModal()">Cancelar</button>
-    <button type="submit" form="formNewProduct" class="btn-primary">Guardar Producto</button>
+    <button type="submit" form="formNewProduct" class="btn-primary">✅ Crear Producto</button>
   `);
   
   // Auto-calcular precio
@@ -1563,7 +3430,7 @@ async function openNewProduct() {
     const data = Object.fromEntries(formData);
     
     // Convertir números
-    data.stock_actual = parseFloat(data.stock_actual);
+    data.stock_actual = 0; // Inicia en 0, se incrementará al asociar códigos
     data.stock_minimo = parseFloat(data.stock_minimo) || 0;
     data.costo_unitario_base = parseFloat(data.costo_unitario_base);
     data.gastos_asociados_base = parseFloat(data.gastos_asociados_base) || 0;
@@ -1573,15 +3440,17 @@ async function openNewProduct() {
     const result = await InventoryDB.crearProducto(data);
     
     if (result.success) {
-      // Si hay código de barras, asociarlo
-      const codigoBarras = document.getElementById("codigoBarras").value.trim();
-      if (codigoBarras) {
-        await InventoryDB.asociarCodigoBarras(result.data.id, codigoBarras);
-      }
-      
-      showToast("Producto creado exitosamente", "success");
+      showToast("✅ Producto creado exitosamente", "success");
       hideModal();
-      loadProductos(document.getElementById("viewProductos"));
+      
+      // Preguntar si desea comenzar a escanear códigos de barras
+      setTimeout(() => {
+        if (confirm(`¿Deseas comenzar a escanear códigos de barras para "${data.nombre}"?\n\nCada código escaneado aumentará el stock en 1 unidad.`)) {
+          viewProducto(result.data.id);
+        } else {
+          loadProductos(document.getElementById("viewProductos"));
+        }
+      }, 500);
     } else {
       showToast("Error: " + result.error, "error");
     }
@@ -1828,68 +3697,138 @@ async function openNewCompra() {
   let itemsCompra = [];
   
   showModal("🛒 Nueva Compra", `
-    <form id="formNewCompra" class="form-vertical">
-      <div class="form-row">
-        <div class="form-group">
-          <label>Proveedor</label>
-          <select name="proveedor_id" class="form-input">
-            <option value="">Sin proveedor</option>
-            ${proveedores.map(p => `<option value="${p.id}">${p.nombre}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Fecha *</label>
-          <input type="date" name="fecha" required class="form-input" value="${new Date().toISOString().split('T')[0]}">
-        </div>
-      </div>
-      
-      <div class="form-row">
-        <div class="form-group">
-          <label>Referencia/Factura</label>
-          <input type="text" name="referencia" class="form-input">
-        </div>
-        <div class="form-group">
-          <label>Método de Pago</label>
-          <select name="metodo_pago" class="form-input">
-            <option value="efectivo">Efectivo</option>
-            <option value="transferencia">Transferencia</option>
-            <option value="credito">Crédito</option>
-          </select>
-        </div>
-      </div>
-      
-      <h4>Items de Compra</h4>
-      <div class="form-group">
-        <label>Agregar Producto</label>
-        <select id="productoCompraSelect" class="form-input">
-          <option value="">Seleccionar producto</option>
-          ${productos.map(p => `<option value="${p.id}" data-name="${p.nombre}">${p.nombre} (${p.sku})</option>`).join('')}
-        </select>
-      </div>
-      
-      <div id="itemsCompraContainer"></div>
-      
-      <div class="compra-totales">
-        <div class="form-row">
-          <div class="form-group">
-            <label>Gastos Adicionales (envío, impuestos, etc.)</label>
-            <input type="number" id="gastosAdicionales" min="0" step="0.01" value="0" class="form-input">
+    <div class="inv-new-purchase-modal">
+      <form id="formNewCompra" class="inv-purchase-form">
+        <!-- Información básica de la compra -->
+        <div class="inv-purchase-form-section">
+          <h3 class="inv-purchase-section-title">
+            <span class="inv-purchase-section-icon">📋</span>
+            <span>Información Básica</span>
+          </h3>
+          
+          <div class="inv-purchase-form-grid">
+            <div class="inv-form-group">
+              <label class="inv-form-label">
+                <span class="inv-form-label-icon">🏭</span>
+                <span>Proveedor</span>
+              </label>
+              <select name="proveedor_id" class="inv-form-input inv-form-select">
+                <option value="">Sin proveedor</option>
+                ${proveedores.map(p => `<option value="${p.id}">${p.nombre}</option>`).join('')}
+              </select>
+            </div>
+            
+            <div class="inv-form-group">
+              <label class="inv-form-label">
+                <span class="inv-form-label-icon">📅</span>
+                <span>Fecha *</span>
+              </label>
+              <input type="date" name="fecha" required class="inv-form-input" value="${new Date().toISOString().split('T')[0]}">
+            </div>
+          </div>
+          
+          <div class="inv-purchase-form-grid">
+            <div class="inv-form-group">
+              <label class="inv-form-label">
+                <span class="inv-form-label-icon">📄</span>
+                <span>Referencia/Factura</span>
+              </label>
+              <input type="text" name="referencia" class="inv-form-input" placeholder="Número de factura o referencia">
+            </div>
+            
+            <div class="inv-form-group">
+              <label class="inv-form-label">
+                <span class="inv-form-label-icon">💳</span>
+                <span>Método de Pago</span>
+              </label>
+              <select name="metodo_pago" class="inv-form-input inv-form-select">
+                <option value="efectivo">💵 Efectivo</option>
+                <option value="transferencia">🏦 Transferencia</option>
+                <option value="credito">💳 Crédito</option>
+                <option value="cheque">📝 Cheque</option>
+              </select>
+            </div>
           </div>
         </div>
-        <div class="total-row">
-          <span>Subtotal:</span>
-          <span id="compraSubtotal">$0</span>
+        
+        <!-- Productos de la compra -->
+        <div class="inv-purchase-form-section">
+          <h3 class="inv-purchase-section-title">
+            <span class="inv-purchase-section-icon">📦</span>
+            <span>Productos</span>
+          </h3>
+          
+          <div class="inv-product-selector-container">
+            <div class="inv-form-group">
+              <label class="inv-form-label">Agregar Producto</label>
+              <div class="inv-product-selector">
+                <select id="productoCompraSelect" class="inv-form-input inv-form-select">
+                  <option value="">🔍 Seleccionar producto...</option>
+                  ${productos.map(p => `<option value="${p.id}" data-name="${p.nombre}">${p.nombre} (${p.sku})</option>`).join('')}
+                </select>
+                <button type="button" class="inv-btn inv-btn-outline inv-btn-sm" onclick="openProductQuickAdd()">
+                  ➕ Crear Producto
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          <div class="inv-purchase-items-container">
+            <div id="itemsCompraContainer" class="inv-purchase-items-list">
+              <div class="inv-empty-items-state">
+                <div class="inv-empty-items-icon">📦</div>
+                <p class="inv-empty-items-text">No hay productos agregados</p>
+                <p class="inv-empty-items-hint">Selecciona productos de la lista para agregar a la compra</p>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="total-row total-main">
-          <span>Total:</span>
-          <span id="compraTotal">$0</span>
+        
+        <!-- Totales y gastos -->
+        <div class="inv-purchase-form-section">
+          <h3 class="inv-purchase-section-title">
+            <span class="inv-purchase-section-icon">💰</span>
+            <span>Cálculo de Totales</span>
+          </h3>
+          
+          <div class="inv-purchase-totals-container">
+            <div class="inv-form-group">
+              <label class="inv-form-label">
+                <span class="inv-form-label-icon">🚚</span>
+                <span>Gastos Adicionales</span>
+              </label>
+              <div class="inv-input-with-hint">
+                <input type="number" id="gastosAdicionales" min="0" step="0.01" value="0" class="inv-form-input" placeholder="0.00">
+                <span class="inv-input-hint">Envío, impuestos, otros gastos</span>
+              </div>
+            </div>
+            
+            <div class="inv-purchase-summary-card">
+              <div class="inv-purchase-summary-row">
+                <span class="inv-summary-label">Subtotal productos:</span>
+                <span class="inv-summary-value" id="compraSubtotal">$0</span>
+              </div>
+              <div class="inv-purchase-summary-row">
+                <span class="inv-summary-label">Gastos adicionales:</span>
+                <span class="inv-summary-value" id="compraGastos">$0</span>
+              </div>
+              <div class="inv-purchase-summary-row inv-summary-total">
+                <span class="inv-summary-label">Total a pagar:</span>
+                <span class="inv-summary-value" id="compraTotal">$0</span>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-    </form>
+      </form>
+    </div>
   `, `
-    <button type="button" class="btn-secondary" onclick="hideModal()">Cancelar</button>
-    <button type="submit" form="formNewCompra" class="btn-primary" id="btnGuardarCompra" disabled>
-      Guardar Compra
+    <button type="button" class="inv-btn inv-btn-secondary" onclick="hideModal()">
+      <span>❌</span>
+      <span>Cancelar</span>
+    </button>
+    <button type="submit" form="formNewCompra" class="inv-btn inv-btn-success" id="btnGuardarCompra" disabled>
+      <span>💾</span>
+      <span>Guardar Compra</span>
     </button>
   `);
   
@@ -1901,6 +3840,14 @@ async function openNewCompra() {
     const option = e.target.selectedOptions[0];
     const nombreProducto = option.dataset.name;
     
+    // Verificar si ya está agregado
+    const yaExiste = itemsCompra.find(item => item.producto_id === productoId);
+    if (yaExiste) {
+      showToast("Este producto ya está agregado", "warning");
+      e.target.value = "";
+      return;
+    }
+    
     itemsCompra.push({
       producto_id: productoId,
       nombre: nombreProducto,
@@ -1910,33 +3857,141 @@ async function openNewCompra() {
     
     e.target.value = "";
     renderItemsCompra();
+    
+    // Animación de feedback
+    const container = document.getElementById("itemsCompraContainer");
+    container.style.transform = "scale(1.02)";
+    setTimeout(() => {
+      container.style.transform = "scale(1)";
+    }, 200);
   });
   
   function renderItemsCompra() {
     const container = document.getElementById("itemsCompraContainer");
     
     if (itemsCompra.length === 0) {
-      container.innerHTML = '<p style="text-align: center; color: var(--gray-500);">No hay items</p>';
+      container.innerHTML = `
+        <div class="inv-empty-items-state">
+          <div class="inv-empty-items-icon">📦</div>
+          <p class="inv-empty-items-text">No hay productos agregados</p>
+          <p class="inv-empty-items-hint">Selecciona productos de la lista para agregar a la compra</p>
+        </div>
+      `;
       document.getElementById("btnGuardarCompra").disabled = true;
       return;
     }
     
-    container.innerHTML = itemsCompra.map((item, index) => `
-      <div class="compra-item">
-        <div class="compra-item-name">${item.nombre}</div>
-        <div class="compra-item-controls">
-          <input type="number" placeholder="Cantidad" value="${item.cantidad}" min="1" step="0.01"
-                 onchange="itemsCompra[${index}].cantidad = parseFloat(this.value); calcularTotalesCompra()" 
-                 class="form-input-sm">
-          <input type="number" placeholder="Costo unitario" value="${item.costo_unitario}" min="0" step="0.01"
-                 onchange="itemsCompra[${index}].costo_unitario = parseFloat(this.value); calcularTotalesCompra()" 
-                 class="form-input-sm">
-          <button class="btn-icon-sm btn-danger" onclick="itemsCompra.splice(${index}, 1); this.closest('.compra-item').remove(); calcularTotalesCompra()">🗑️</button>
-        </div>
+    container.innerHTML = `
+      <div class="inv-purchase-items-header">
+        <span class="inv-items-count">${itemsCompra.length} producto${itemsCompra.length !== 1 ? 's' : ''}</span>
+        <button type="button" class="inv-btn inv-btn-outline inv-btn-sm" onclick="clearAllItems()">
+          🗑️ Limpiar todo
+        </button>
       </div>
-    `).join('');
+      
+      <div class="inv-purchase-items-grid">
+        ${itemsCompra.map((item, index) => `
+          <div class="inv-purchase-item-card" data-index="${index}">
+            <div class="inv-purchase-item-header">
+              <div class="inv-purchase-item-name">
+                <span class="inv-purchase-item-icon">📦</span>
+                <span>${item.nombre}</span>
+              </div>
+              <button type="button" class="inv-btn-icon inv-btn-danger-soft" onclick="removeItem(${index})" title="Eliminar producto">
+                🗑️
+              </button>
+            </div>
+            
+            <div class="inv-purchase-item-inputs">
+              <div class="inv-input-group">
+                <label class="inv-input-label">Cantidad</label>
+                <div class="inv-quantity-input">
+                  <button type="button" class="inv-quantity-btn" onclick="adjustQuantity(${index}, -1)">−</button>
+                  <input type="number" 
+                         value="${item.cantidad}" 
+                         min="0.01" 
+                         step="0.01"
+                         class="inv-quantity-field"
+                         onchange="updateQuantity(${index}, this.value)"
+                         onblur="calcularTotalesCompra()">
+                  <button type="button" class="inv-quantity-btn" onclick="adjustQuantity(${index}, 1)">+</button>
+                </div>
+              </div>
+              
+              <div class="inv-input-group">
+                <label class="inv-input-label">Costo Unitario</label>
+                <div class="inv-price-input">
+                  <span class="inv-currency-symbol">$</span>
+                  <input type="number" 
+                         value="${item.costo_unitario}" 
+                         min="0" 
+                         step="0.01"
+                         class="inv-price-field"
+                         placeholder="0.00"
+                         onchange="updateUnitCost(${index}, this.value)"
+                         onblur="calcularTotalesCompra()">
+                </div>
+              </div>
+            </div>
+            
+            <div class="inv-purchase-item-total">
+              <span class="inv-item-total-label">Subtotal:</span>
+              <span class="inv-item-total-amount">${formatCurrency(item.cantidad * item.costo_unitario)}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
     
     document.getElementById("btnGuardarCompra").disabled = false;
+    calcularTotalesCompra();
+  }
+  
+  // Funciones auxiliares para el manejo de items
+  window.removeItem = function(index) {
+    itemsCompra.splice(index, 1);
+    renderItemsCompra();
+    showToast("Producto eliminado", "info");
+  };
+  
+  window.clearAllItems = function() {
+    if (confirm("¿Estás seguro de que quieres eliminar todos los productos?")) {
+      itemsCompra = [];
+      renderItemsCompra();
+      showToast("Todos los productos eliminados", "info");
+    }
+  };
+  
+  window.adjustQuantity = function(index, delta) {
+    const newQuantity = Math.max(0.01, itemsCompra[index].cantidad + delta);
+    itemsCompra[index].cantidad = newQuantity;
+    document.querySelector(`[data-index="${index}"] .inv-quantity-field`).value = newQuantity;
+    calcularTotalesCompra();
+    updateItemSubtotal(index);
+  };
+  
+  window.updateQuantity = function(index, value) {
+    const quantity = Math.max(0.01, parseFloat(value) || 0.01);
+    itemsCompra[index].cantidad = quantity;
+    updateItemSubtotal(index);
+  };
+  
+  window.updateUnitCost = function(index, value) {
+    const cost = Math.max(0, parseFloat(value) || 0);
+    itemsCompra[index].costo_unitario = cost;
+    updateItemSubtotal(index);
+  };
+  
+  function updateItemSubtotal(index) {
+    const item = itemsCompra[index];
+    const subtotal = item.cantidad * item.costo_unitario;
+    const card = document.querySelector(`[data-index="${index}"]`);
+    if (card) {
+      const totalElement = card.querySelector('.inv-item-total-amount');
+      if (totalElement) {
+        totalElement.textContent = formatCurrency(subtotal);
+      }
+    }
     calcularTotalesCompra();
   }
   
@@ -1946,10 +4001,32 @@ async function openNewCompra() {
     const total = subtotal + gastosAdicionales;
     
     document.getElementById("compraSubtotal").textContent = formatCurrency(subtotal);
+    document.getElementById("compraGastos").textContent = formatCurrency(gastosAdicionales);
     document.getElementById("compraTotal").textContent = formatCurrency(total);
+    
+    // Actualizar el botón de guardar
+    const btnGuardar = document.getElementById("btnGuardarCompra");
+    if (btnGuardar) {
+      if (total > 0 && itemsCompra.length > 0) {
+        btnGuardar.disabled = false;
+        btnGuardar.querySelector('span:last-child').textContent = `Guardar Compra (${formatCurrency(total)})`;
+      } else {
+        btnGuardar.disabled = true;
+        btnGuardar.querySelector('span:last-child').textContent = 'Guardar Compra';
+      }
+    }
   };
   
+  // Event listeners
   document.getElementById("gastosAdicionales").addEventListener("input", calcularTotalesCompra);
+  
+  // Función para crear producto rápido (placeholder)
+  window.openProductQuickAdd = function() {
+    showToast("Función de creación rápida en desarrollo", "info");
+  };
+  
+  // Renderizado inicial
+  renderItemsCompra();
   
   // Submit
   document.getElementById("formNewCompra").addEventListener("submit", async (e) => {
@@ -2184,33 +4261,89 @@ async function startCamera() {
     
     scannerVideo.srcObject = stream;
     
-    // Esperar a que el video esté REALMENTE listo
+    Logger.info("📹 Stream asignado al video, esperando inicio...");
+    
+    // Esperar a que el video esté REALMENTE listo (método mejorado y robusto)
     await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Video timeout")), 10000);
+      const timeout = setTimeout(() => {
+        Logger.error("⏱️ Timeout esperando video");
+        Logger.error(`   readyState: ${scannerVideo.readyState}`);
+        Logger.error(`   dimensions: ${scannerVideo.videoWidth}x${scannerVideo.videoHeight}`);
+        Logger.error(`   paused: ${scannerVideo.paused}`);
+        reject(new Error("Video timeout"));
+      }, 15000);
+      
+      let resolved = false;
       
       const checkReady = () => {
+        if (resolved) return;
+        
+        Logger.info(`🔍 Verificando video - readyState: ${scannerVideo.readyState}, dims: ${scannerVideo.videoWidth}x${scannerVideo.videoHeight}`);
+        
         if (
           scannerVideo.readyState >= 2 && 
           scannerVideo.videoWidth > 0 && 
           scannerVideo.videoHeight > 0
         ) {
+          resolved = true;
           clearTimeout(timeout);
           Logger.info(`✅ Video listo: ${scannerVideo.videoWidth}x${scannerVideo.videoHeight}`);
           resolve();
-        } else {
-          requestAnimationFrame(checkReady);
         }
       };
       
-      scannerVideo.onloadedmetadata = () => {
-        scannerVideo.play()
-          .then(() => checkReady())
-          .catch(err => {
-            clearTimeout(timeout);
-            Logger.error("Error al reproducir video:", err);
-            reject(err);
-          });
+      // Intentar reproducir y verificar
+      const tryPlay = async () => {
+        if (resolved) return;
+        
+        try {
+          Logger.info("▶️ Intentando reproducir video...");
+          await scannerVideo.play();
+          Logger.info("✅ Video reproduciendo");
+          
+          // Verificar inmediatamente y después de un delay
+          setTimeout(checkReady, 100);
+          setTimeout(checkReady, 500);
+        } catch (err) {
+          Logger.warn("⚠️ Error al reproducir:", err.message);
+          // No rechazamos aquí, seguimos intentando
+        }
       };
+      
+      // Escuchar múltiples eventos
+      scannerVideo.addEventListener('loadedmetadata', () => {
+        Logger.info("📊 loadedmetadata event");
+        tryPlay();
+      }, { once: true });
+      
+      scannerVideo.addEventListener('loadeddata', () => {
+        Logger.info("📊 loadeddata event");
+        tryPlay();
+      }, { once: true });
+      
+      scannerVideo.addEventListener('canplay', () => {
+        Logger.info("📊 canplay event");
+        checkReady();
+      }, { once: true });
+      
+      // Verificación periódica como fallback
+      const interval = setInterval(() => {
+        if (resolved) {
+          clearInterval(interval);
+          return;
+        }
+        checkReady();
+        // Intentar play si está pausado
+        if (scannerVideo.paused) {
+          tryPlay();
+        }
+      }, 500);
+      
+      // Intentar inmediatamente si ya está listo
+      if (scannerVideo.readyState >= 2) {
+        Logger.info("✨ Video ya listo, reproduciendo inmediatamente");
+        tryPlay();
+      }
     });
     
     // Configurar track con capacidades avanzadas
@@ -2283,23 +4416,31 @@ async function initNativeDetector() {
       return false;
     }
     
-    // Intentar obtener formatos soportados
+    // Obtener formatos soportados
     let formats = [];
     try {
       if (window.BarcodeDetector.getSupportedFormats) {
-        formats = await window.BarcodeDetector.getSupportedFormats();
-        Logger.info("BarcodeDetector formatos soportados:", formats);
+        const allFormats = await window.BarcodeDetector.getSupportedFormats();
+        Logger.info("BarcodeDetector formatos disponibles:", allFormats);
+        
+        // Filtrar a los formatos que nos interesan
+        const wantedFormats = ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e'];
+        formats = allFormats.filter(f => wantedFormats.includes(f));
+        
+        Logger.info("BarcodeDetector formatos seleccionados:", formats);
       }
     } catch (err) {
-      Logger.warn("No se pudieron obtener formatos, usando defaults");
-      formats = ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e'];
+      Logger.warn("No se pudieron obtener formatos específicos, usando todos");
+      formats = []; // Usar todos los disponibles
     }
     
-    // Crear detector con formatos
+    // Crear detector
     if (formats.length > 0) {
       barcodeDetector = new window.BarcodeDetector({ formats });
+      Logger.info(`✅ BarcodeDetector creado con ${formats.length} formatos`);
     } else {
       barcodeDetector = new window.BarcodeDetector();
+      Logger.info("✅ BarcodeDetector creado con formatos por defecto");
     }
     
     scannerEngine = 'native';
@@ -2447,10 +4588,16 @@ function stopDetectionLoop() {
   Logger.info("⏹️ Deteniendo detección...");
   scannerActive = false;
   
-  // Cancelar animation frame de native
+  // Cancelar animation frame de ZXing
   if (zxingAnimationFrame) {
     cancelAnimationFrame(zxingAnimationFrame);
     zxingAnimationFrame = null;
+  }
+  
+  // Cancelar animation frame de native
+  if (nativeAnimationFrame) {
+    cancelAnimationFrame(nativeAnimationFrame);
+    nativeAnimationFrame = null;
   }
   
   // Resetear ZXing si está activo
@@ -2475,20 +4622,26 @@ async function openScanner() {
   }
   
   Logger.info("📸 Abriendo scanner...");
+  console.log('🔍 Scanner Debug - Iniciando apertura...');
   scannerOverlay.style.display = "flex";
   
   try {
     // 1. Enumerar cámaras disponibles
+    console.log('🔍 Scanner Debug - Enumerando cámaras...');
     await enumerateCameras();
     
     // 2. Iniciar cámara PRIMERO (video debe estar listo antes de motor)
+    console.log('🔍 Scanner Debug - Iniciando cámara...');
     await startCamera();
     
     // 3. Inicializar motor de detección (primero Native, luego ZXing)
+    console.log('🔍 Scanner Debug - Inicializando detectores...');
     const nativeOk = await initNativeDetector();
+    console.log('🔍 Scanner Debug - BarcodeDetector nativo:', nativeOk ? '✅ OK' : '❌ No disponible');
     
     if (!nativeOk) {
       const zxingOk = await initZxingFallback();
+      console.log('🔍 Scanner Debug - ZXing fallback:', zxingOk ? '✅ OK' : '❌ Error');
       if (!zxingOk) {
         Logger.error("❌ No hay motor de escaneo disponible");
         showToast("Escaneo automático no disponible", "warning");
@@ -2501,6 +4654,7 @@ async function openScanner() {
     scannerActive = true;
     scannerStartTime = Date.now(); // Track inicio para timeout
     scannerTipsShown = false; // Reset tips
+    scannerAttemptCount = 0; // Reset contador de intentos
     
     // 5. Mostrar indicador de actividad
     const activeIndicator = document.getElementById('scannerActiveIndicator');
@@ -2509,9 +4663,22 @@ async function openScanner() {
     }
     
     // 6. Iniciar detección
+    console.log('🔍 Scanner Debug - Iniciando detección con engine:', scannerEngine);
     startDetectionLoop();
     
     Logger.info("✅ Scanner activo y listo");
+    Logger.info(`📊 Motor: ${scannerEngine}, Resolución video: ${scannerVideo.videoWidth}x${scannerVideo.videoHeight}`);
+    
+    // Mostrar info en consola para debugging con información completa
+    if (SCANNER_DEBUG || true) { // Siempre mostrar info de inicio
+      console.log('%c🔍 SCANNER INICIADO', 'background: #4CAF50; color: white; padding: 5px; font-weight: bold;');
+      console.log('Engine usado:', scannerEngine);
+      console.log('Resolución real videoWidth x videoHeight:', `${scannerVideo.videoWidth} x ${scannerVideo.videoHeight}`);
+      console.log('FPS target (interval):', scannerEngine === 'native' ? `${NATIVE_CHECK_INTERVAL}ms (~${Math.round(1000/NATIVE_CHECK_INTERVAL)}fps)` : `${ZXING_CHECK_INTERVAL}ms (~${Math.round(1000/ZXING_CHECK_INTERVAL)}fps)`);
+      console.log('Modo ROI disponibles:', 'full, centerLarge, centerMedium, centerSmall');
+      console.log('%cDEBUG MODE ACTIVO - Mira la consola para logs de detección', 'background: #FF9800; color: white; padding: 3px;');
+      console.log('Para desactivar debug: localStorage.setItem("scanner_debug", "false")');
+    }
     
   } catch (error) {
     Logger.error("❌ Error al abrir scanner:", error);
@@ -2631,15 +4798,49 @@ function captureFrameToCanvas(mode = 'full') {
  * @param {CanvasRenderingContext2D} ctx - Contexto 2D del canvas
  * @param {number} width - Ancho del canvas
  * @param {number} height - Alto del canvas
- * @param {boolean} applyPreprocessing - Si aplicar preprocesamiento
+ * @param {string} level - 'none', 'light', 'full' - Nivel de preprocesamiento
  * @returns {ImageData} ImageData procesado
  */
-function getProcessedImageDataFromCanvas(ctx, width, height, applyPreprocessing = true) {
+function getProcessedImageDataFromCanvas(ctx, width, height, level = 'none') {
   let imageData = ctx.getImageData(0, 0, width, height);
   
-  if (applyPreprocessing) {
+  if (level === 'light') {
+    // Preprocesamiento LIGERO: solo escala de grises y contraste moderado
+    imageData = preprocessImageDataLight(imageData);
+  } else if (level === 'full') {
+    // Preprocesamiento COMPLETO: grises + contraste + binarización (solo para ZXing)
     imageData = preprocessImageData(imageData);
   }
+  // 'none': devolver sin procesar
+  
+  return imageData;
+}
+
+/**
+ * Preprocesamiento LIGERO para BarcodeDetector nativo
+ * Solo aplica: escala de grises + contraste moderado (SIN binarización)
+ */
+function preprocessImageDataLight(imageData) {
+  const data = imageData.data;
+  const length = data.length;
+  
+  // Paso 1: Convertir a escala de grises
+  for (let i = 0; i < length; i += 4) {
+    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    data[i] = data[i + 1] = data[i + 2] = gray;
+  }
+  
+  // Paso 2: Aumentar contraste MODERADO (no extremo)
+  const contrast = 1.2; // Menos agresivo que 1.3
+  const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+  
+  for (let i = 0; i < length; i += 4) {
+    data[i] = Math.min(255, Math.max(0, factor * (data[i] - 128) + 128));
+    data[i + 1] = data[i];
+    data[i + 2] = data[i];
+  }
+  
+  // NO aplicar binarización para BarcodeDetector
   
   return imageData;
 }
@@ -2723,6 +4924,29 @@ function checkAndShowScannerTips() {
   if (elapsed > SCANNER_NO_DETECT_TIMEOUT) {
     scannerTipsShown = true;
     
+    // Mostrar tips box si existe
+    const tipsBox = document.getElementById('scannerTips');
+    const instructionsBox = document.getElementById('scannerInstructionsBox');
+    
+    if (tipsBox) {
+      tipsBox.style.display = 'block';
+      tipsBox.classList.add('show');
+      
+      // Ocultar tips después de 3 segundos (menos intrusivo)
+      setTimeout(() => {
+        if (tipsBox) {
+          tipsBox.classList.remove('show');
+          setTimeout(() => {
+            if (tipsBox && !tipsBox.classList.contains('show')) {
+              tipsBox.style.display = 'none';
+            }
+          }, 300); // Esperar a que termine la animación de fade out
+        }
+      }, 3000);
+    }
+    
+    // Comentar scannerInfo intrusivo - ya tenemos tipsBox discreto
+    /*
     if (scannerInfo) {
       scannerInfo.innerHTML = `
         <div style="text-align: center; font-size: 0.9em; line-height: 1.4;">
@@ -2730,13 +4954,34 @@ function checkAndShowScannerTips() {
           • Acerca o aleja el código<br>
           • Evita reflejos de luz<br>
           • Mantén el código dentro del marco<br>
-          • Asegúrate de buena iluminación
+          • Asegúrate de buena iluminación<br>
+          <small style="color: #999; margin-top: 8px; display: block;">
+            Intentos: ${scannerAttemptCount} | Motor: ${scannerEngine}
+          </small>
         </div>
       `;
       scannerInfo.style.color = '#FFA500';
     }
+    */
     
-    Logger.info('⏱️ 8 segundos sin detectar - mostrando tips');
+    Logger.info(`⏱️ 15 segundos sin detectar - mostrando tips discretos (${scannerAttemptCount} intentos)`);
+    
+    // Solo mensaje breve y no intrusivo en scannerInfo
+    if (scannerInfo) {
+      scannerInfo.textContent = "🔍 Buscando código...";
+      scannerInfo.style.color = '#FFA500';
+    }
+    
+    // Log adicional de diagnóstico
+    if (scannerVideo) {
+      console.log('📹 Estado del video:', {
+        readyState: scannerVideo.readyState,
+        videoWidth: scannerVideo.videoWidth,
+        videoHeight: scannerVideo.videoHeight,
+        paused: scannerVideo.paused,
+        ended: scannerVideo.ended
+      });
+    }
   }
 }
 
@@ -2751,17 +4996,34 @@ let lastNativeCheck = 0;
 const NATIVE_CHECK_INTERVAL = 120; // 8 fps óptimo
 
 async function detectBarcodeNative() {
-  if (!scannerActive || !barcodeDetector || !scannerVideo) return;
+  if (!scannerActive || !barcodeDetector || !scannerVideo) {
+    console.log('❌ Native detection stopped:', { scannerActive, barcodeDetector: !!barcodeDetector, scannerVideo: !!scannerVideo });
+    return;
+  }
   
   const now = Date.now();
   
+  // Debug log every 100 attempts
+  if (scannerAttemptCount % 100 === 0) {
+    console.log('🔍 Native detection running, attempt:', scannerAttemptCount);
+  }
+  
   // Throttling para no saturar a 60fps
   if (now - lastNativeCheck < NATIVE_CHECK_INTERVAL) {
-    requestAnimationFrame(detectBarcodeNative);
+    nativeAnimationFrame = requestAnimationFrame(detectBarcodeNative);
     return;
   }
   
   lastNativeCheck = now;
+  scannerAttemptCount++; // Incrementar contador
+  
+  // Mostrar contador cada 20 intentos (cada ~2.4 segundos)
+  if (scannerAttemptCount % 20 === 0) {
+    Logger.info(`🔍 Intentos de detección: ${scannerAttemptCount}`);
+    if (SCANNER_DEBUG) {
+      console.log(`🔍 Intento #${scannerAttemptCount}`);
+    }
+  }
   
   // Verificar timeout y mostrar tips
   checkAndShowScannerTips();
@@ -2769,43 +5031,73 @@ async function detectBarcodeNative() {
   try {
     // Verificar que el video esté listo
     if (scannerVideo.readyState < 2 || scannerVideo.videoWidth === 0) {
-      requestAnimationFrame(detectBarcodeNative);
+      nativeAnimationFrame = requestAnimationFrame(detectBarcodeNative);
       return;
     }
     
     let barcodes = [];
     let detectedFrom = null;
     
-    // ESTRATEGIA MULTI-INTENTO: Probar diferentes regiones hasta detectar
-    const modes = ['full', 'centerLarge', 'centerMedium', 'centerSmall'];
-    
-    for (const mode of modes) {
-      try {
-        // Capturar frame según modo
-        const capture = captureFrameToCanvas(mode);
-        
-        // Obtener ImageData CON preprocesamiento (mejora detección en pantallas)
-        const imageData = getProcessedImageDataFromCanvas(capture.ctx, capture.width, capture.height, true);
-        
-        // Poner ImageData procesado de vuelta en canvas para que BarcodeDetector lo lea
-        capture.ctx.putImageData(imageData, 0, 0);
-        
-        // Intentar detectar desde canvas procesado
-        barcodes = await barcodeDetector.detect(capture.canvas);
-        
-        if (barcodes.length > 0) {
-          detectedFrom = mode;
-          if (SCANNER_DEBUG) {
-            console.log(`✅ Detectado con modo: ${mode}`);
-          }
-          break; // Salir del loop si detectó
-        }
-        
-      } catch (err) {
+    // ESTRATEGIA OPTIMIZADA: Primero intentar directo del video (más rápido y efectivo)
+    try {
+      barcodes = await barcodeDetector.detect(scannerVideo);
+      if (barcodes.length > 0) {
+        detectedFrom = 'video-direct';
+        console.log('🎯 CÓDIGO DETECTADO directo del video:', barcodes[0].rawValue);
         if (SCANNER_DEBUG) {
-          console.warn(`⚠️ Modo ${mode} falló:`, err.message);
+          console.log('✅ Detectado directo del video');
         }
-        // Continuar con siguiente modo
+      } else if (SCANNER_DEBUG && scannerAttemptCount % 50 === 0) {
+        console.log('🔍 Video direct: no codes detected, attempt', scannerAttemptCount);
+      }
+    } catch (err) {
+      if (SCANNER_DEBUG) {
+        console.warn('⚠️ Detección directa falló:', err.message);
+      }
+    }
+    
+    // Si no detectó directo, probar con canvas en diferentes regiones SIN preprocesamiento
+    if (barcodes.length === 0) {
+      const modes = ['full', 'centerLarge', 'centerMedium', 'centerSmall'];
+      
+      for (const mode of modes) {
+        try {
+          // Capturar frame según modo
+          const capture = captureFrameToCanvas(mode);
+          
+          // IMPORTANTE: NO aplicar preprocesamiento agresivo para BarcodeDetector
+          // BarcodeDetector funciona mejor con imágenes naturales
+          
+          // Intentar detectar desde canvas SIN procesar
+          barcodes = await barcodeDetector.detect(capture.canvas);
+          
+          if (barcodes.length > 0) {
+            detectedFrom = mode + '-raw';
+            if (SCANNER_DEBUG) {
+              console.log(`✅ Detectado con modo: ${mode} (sin preprocesar)`);
+            }
+            break;
+          }
+          
+          // Si sigue sin detectar, intentar con preprocesamiento LIGERO
+          const imageDataLight = getProcessedImageDataFromCanvas(capture.ctx, capture.width, capture.height, 'light');
+          capture.ctx.putImageData(imageDataLight, 0, 0);
+          
+          barcodes = await barcodeDetector.detect(capture.canvas);
+          
+          if (barcodes.length > 0) {
+            detectedFrom = mode + '-light';
+            if (SCANNER_DEBUG) {
+              console.log(`✅ Detectado con modo: ${mode} (preprocesamiento ligero)`);
+            }
+            break;
+          }
+          
+        } catch (err) {
+          if (SCANNER_DEBUG) {
+            console.warn(`⚠️ Modo ${mode} falló:`, err.message);
+          }
+        }
       }
     }
     
@@ -2818,11 +5110,11 @@ async function detectBarcodeNative() {
     }
     
     // Continuar loop si no detectó nada
-    requestAnimationFrame(detectBarcodeNative);
+    nativeAnimationFrame = requestAnimationFrame(detectBarcodeNative);
     
   } catch (error) {
     Logger.error("❌ Error en detección nativa:", error);
-    requestAnimationFrame(detectBarcodeNative);
+    nativeAnimationFrame = requestAnimationFrame(detectBarcodeNative);
   }
 }
 
@@ -2838,9 +5130,17 @@ let lastZxingCheck = 0;
 const ZXING_CHECK_INTERVAL = 120; // 8 FPS óptimo
 
 async function detectBarcodeZxingContinuous() {
-  if (!scannerActive || !zxingCodeReader || !scannerVideo) return;
+  if (!scannerActive || !zxingCodeReader || !scannerVideo) {
+    console.log('❌ ZXing detection stopped:', { scannerActive, zxingCodeReader: !!zxingCodeReader, scannerVideo: !!scannerVideo });
+    return;
+  }
   
   const now = Date.now();
+  
+  // Debug log every 100 attempts  
+  if (scannerAttemptCount % 100 === 0) {
+    console.log('🔍 ZXing detection running, attempt:', scannerAttemptCount);
+  }
   
   // Throttling para rendimiento
   if (now - lastZxingCheck < ZXING_CHECK_INTERVAL) {
@@ -2849,6 +5149,15 @@ async function detectBarcodeZxingContinuous() {
   }
   
   lastZxingCheck = now;
+  scannerAttemptCount++; // Incrementar contador
+  
+  // Mostrar contador cada 20 intentos
+  if (scannerAttemptCount % 20 === 0) {
+    Logger.info(`🔍 ZXing intentos: ${scannerAttemptCount}`);
+    if (SCANNER_DEBUG) {
+      console.log(`🔍 ZXing Intento #${scannerAttemptCount}`);
+    }
+  }
   
   // Verificar timeout y mostrar tips
   checkAndShowScannerTips();
@@ -2870,7 +5179,7 @@ async function detectBarcodeZxingContinuous() {
     let result = null;
     let detectedFrom = null;
     
-    // ESTRATEGIA MULTI-INTENTO: Probar diferentes regiones hasta detectar
+    // ESTRATEGIA MULTI-INTENTO: Probar diferentes regiones
     const modes = ['full', 'centerLarge', 'centerMedium', 'centerSmall'];
     
     for (const mode of modes) {
@@ -2878,18 +5187,80 @@ async function detectBarcodeZxingContinuous() {
         // Capturar frame según modo
         const capture = captureFrameToCanvas(mode);
         
-        // Obtener ImageData preprocesado (CLAVE para códigos en pantallas)
-        const imageData = getProcessedImageDataFromCanvas(capture.ctx, capture.width, capture.height, true);
-        
-        // Decodificar desde ImageData (más estable que decodeFromCanvas)
-        result = await zxingCodeReader.decodeFromImageData(imageData);
-        
-        if (result && (result.getText() || result.text)) {
-          detectedFrom = mode;
-          if (SCANNER_DEBUG) {
-            console.log(`✅ ZXing detectó con modo: ${mode}`);
+// CAMBIO CRÍTICO: Volver a método estable toDataURL para compatibilidad
+        try {
+          // Método más compatible: canvas -> dataURL -> Image -> decode
+          const dataURL = capture.canvas.toDataURL('image/png');
+          const img = new Image();
+          img.src = dataURL;
+          await new Promise(resolve => img.onload = resolve);
+          
+          result = await zxingCodeReader.decode(img);
+          
+          if (result && (result.getText() || result.text)) {
+            detectedFrom = mode + '-raw';
+            if (SCANNER_DEBUG) {
+              console.log(`✅ ZXing detectó con modo: ${mode} (sin preprocesar)`);
+            }
+            break;
           }
-          break; // Salir del loop si detectó
+        } catch (e) {
+          if (e.name !== 'NotFoundException') {
+            console.warn('ZXing decode error:', e);
+            throw e;
+          }
+        }
+        
+        // Si no detectó, intentar con preprocesamiento LIGERO
+        const imageDataLight = getProcessedImageDataFromCanvas(capture.ctx, capture.width, capture.height, 'light');
+        capture.ctx.putImageData(imageDataLight, 0, 0);
+        
+        try {
+          const dataURL = capture.canvas.toDataURL('image/png');
+          const img = new Image();
+          img.src = dataURL;
+          await new Promise(resolve => img.onload = resolve);
+          
+          result = await zxingCodeReader.decode(img);
+          
+          if (result && (result.getText() || result.text)) {
+            detectedFrom = mode + '-light';
+            if (SCANNER_DEBUG) {
+              console.log(`✅ ZXing detectó con modo: ${mode} (preprocesamiento ligero)`);
+            }
+            break;
+          }
+        } catch (e) {
+          if (e.name !== 'NotFoundException') {
+            console.warn('ZXing decode light error:', e);
+            throw e;
+          }
+        }
+        
+        // Como último recurso, intentar con preprocesamiento COMPLETO
+        const imageDataFull = getProcessedImageDataFromCanvas(capture.ctx, capture.width, capture.height, 'full');
+        capture.ctx.putImageData(imageDataFull, 0, 0);
+        
+        try {
+          const dataURL = capture.canvas.toDataURL('image/png');
+          const img = new Image();
+          img.src = dataURL;
+          await new Promise(resolve => img.onload = resolve);
+          
+          result = await zxingCodeReader.decode(img);
+          
+          if (result && (result.getText() || result.text)) {
+            detectedFrom = mode + '-full';
+            if (SCANNER_DEBUG) {
+              console.log(`✅ ZXing detectó con modo: ${mode} (preprocesamiento completo)`);
+            }
+            break;
+          }
+        } catch (e) {
+          if (e.name !== 'NotFoundException') {
+            console.warn('ZXing decode full error:', e);
+            throw e;
+          }
         }
         
       } catch (error) {
@@ -2914,60 +5285,486 @@ async function detectBarcodeZxingContinuous() {
   } catch (error) {
     // Solo logear errores reales (no NotFoundException)
     if (error.name !== 'NotFoundException') {
-      Logger.warn("⚠️ Error ZXing:", error.message || error.name || error);
+      if (SCANNER_DEBUG) {
+        Logger.error("❌ Error ZXing:", error);
+      }
     }
   }
   
-  // Continuar loop
+  // Continuar loop si no detectó nada
   zxingAnimationFrame = requestAnimationFrame(detectBarcodeZxingContinuous);
 }
 
 async function processScan(codigo) {
   Logger.info(`Código escaneado: ${codigo} (Modo: ${scannerMode})`);
+  console.log(`🎯 CÓDIGO DETECTADO Y PROCESANDO: ${codigo}`);
+  
+  // Efectos de feedback inmediatos
+  playScanSound();
+  vibrateDevice();
+  showScanFeedback(codigo);
   
   // Buscar producto por código
   const producto = await InventoryDB.buscarProductoPorCodigoBarras(codigo);
   
   if (scannerMode === "venta") {
     if (producto) {
+      showScanSuccess();
+      showToast(`✅ Producto encontrado: ${producto.nombre}`, "success");
       agregarAlCarritoVenta(producto);
     } else {
-      showToast("Producto no registrado", "warning");
+      showScanError();
       closeScanner();
+      // Mostrar modal con opciones cuando no existe el producto
       setTimeout(() => {
-        if (confirm("Producto no registrado. ¿Deseas registrarlo ahora?")) {
-          openNewProduct();
-          setTimeout(() => {
-            document.getElementById("codigoBarras").value = codigo;
-          }, 100);
-        }
+        showCodigoNoRegistradoModal(codigo);
       }, 100);
     }
   } else if (scannerMode === "registro") {
     if (producto) {
-      showToast("Este código ya está asociado a: " + producto.nombre, "info");
+      showScanSuccess();
+      showToast(`ℹ️ Código ya asociado a: ${producto.nombre}`, "info");
       closeScanner();
       setTimeout(() => viewProducto(producto.id), 500);
     } else {
+      showScanSuccess();
       closeScanner();
+      // Mostrar modal con opciones para código nuevo
       setTimeout(() => {
-        openNewProduct();
-        setTimeout(() => {
-          document.getElementById("codigoBarras").value = codigo;
-        }, 100);
+        showCodigoNuevoModal(codigo);
       }, 100);
     }
   } else if (scannerMode === "registroTemporal") {
-    document.getElementById("codigoBarras").value = codigo;
+    // Este modo ya no se usa
+    document.getElementById("codigoBarras")?.value === codigo;
   } else if (scannerMode === "asociar") {
     if (currentProductoForAssociation) {
-      const result = await InventoryDB.asociarCodigoBarras(currentProductoForAssociation, codigo);
+      // Verificar si el código ya está asociado a otro producto
+      if (producto) {
+        if (producto.id === currentProductoForAssociation) {
+          showScanError();
+          showToast("⚠️ Este código ya está asociado a este producto", "warning");
+        } else {
+          showScanError();
+          showToast(`❌ Este código ya pertenece a: ${producto.nombre}`, "error");
+        }
+        return;
+      }
+      
+      // Asociar el código e incrementar el stock
+      const result = await InventoryDB.asociarCodigoBarrasEIncrementarStock(currentProductoForAssociation, codigo);
       if (result.success) {
-        showToast("Código asociado exitosamente", "success");
+        showScanSuccess();
+        showToast(`✅ Código asociado - Stock: ${result.nuevoStock}`, "success");
+        
+        // Actualizar la vista del producto si está abierta
+        const productoActual = await InventoryDB.obtenerProductoPorId(currentProductoForAssociation);
+        if (productoActual) {
+          // Actualizar contador en la UI
+          const stockElement = document.getElementById("productoStockActual");
+          if (stockElement) {
+            stockElement.textContent = productoActual.stock_actual;
+          }
+          
+          // Actualizar lista de códigos
+          const listaCodigosElement = document.getElementById("listaCodigosBarras");
+          if (listaCodigosElement && productoActual.inv_codigos_barras) {
+            listaCodigosElement.innerHTML = productoActual.inv_codigos_barras.length > 0
+              ? productoActual.inv_codigos_barras.map((cb, idx) => `
+                  <div class="inv-codigo-item">
+                    <span class="inv-codigo-numero">#${idx + 1}</span>
+                    <span class="inv-codigo-valor">${cb.codigo}</span>
+                    <button class="inv-btn-icon-danger" onclick="eliminarCodigoBarras(${cb.id}, ${productoActual.id})" title="Eliminar código">
+                      🗑️
+                    </button>
+                  </div>
+                `).join('')
+              : '<p style="color: var(--gray-500); text-align: center;">No hay códigos asociados</p>';
+          }
+        }
       } else {
-        showToast("Error: " + result.error, "error");
+        showScanError();
+        showToast("❌ Error: " + result.error, "error");
       }
     }
+  }
+}
+
+// =============================================================================
+// MODALES Y FLUJO MEJORADO PARA CÓDIGOS NO REGISTRADOS
+// =============================================================================
+
+/**
+ * Muestra modal cuando un código no está registrado en modo venta
+ */
+function showCodigoNoRegistradoModal(codigo) {
+  showModal(`🔍 Código No Registrado`, `
+    <div class="inv-codigo-display">
+      <div class="inv-codigo-escaneado">
+        <span class="inv-codigo-label">Código escaneado:</span>
+        <span class="inv-codigo-valor">${codigo}</span>
+      </div>
+      <div class="inv-alert inv-alert-warning">
+        ⚠️ Este código de barras no está asociado a ningún producto en tu inventario.
+      </div>
+    </div>
+    
+    <div class="inv-opciones-codigo">
+      <h4 style="margin: 1rem 0 0.5rem 0; color: var(--text-primary);">¿Qué deseas hacer?</h4>
+      <div class="inv-opciones-grid">
+        <button class="inv-opcion-btn primary" onclick="crearProductoRapido('${codigo}')">
+          <div class="inv-opcion-icon">🆕</div>
+          <div class="inv-opcion-text">
+            <strong>Crear Producto Nuevo</strong>
+            <small>Registrar producto con datos básicos</small>
+          </div>
+        </button>
+        
+        <button class="inv-opcion-btn secondary" onclick="mostrarProductosParaAsociar('${codigo}')">
+          <div class="inv-opcion-icon">🔗</div>
+          <div class="inv-opcion-text">
+            <strong>Asociar a Producto Existente</strong>
+            <small>Vincular código a producto ya registrado</small>
+          </div>
+        </button>
+      </div>
+    </div>
+  `, `
+    <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
+  `);
+}
+
+/**
+ * Muestra modal cuando se detecta un código nuevo en modo registro
+ */
+function showCodigoNuevoModal(codigo) {
+  showModal(`✅ Código Nuevo Detectado`, `
+    <div class="inv-codigo-display">
+      <div class="inv-codigo-escaneado">
+        <span class="inv-codigo-label">Código escaneado:</span>
+        <span class="inv-codigo-valor">${codigo}</span>
+      </div>
+      <div class="inv-alert inv-alert-success">
+        ✅ Este código está disponible para usar. Elige cómo proceder:
+      </div>
+    </div>
+    
+    <div class="inv-opciones-codigo">
+      <div class="inv-opciones-grid">
+        <button class="inv-opcion-btn primary" onclick="crearProductoRapido('${codigo}')">
+          <div class="inv-opcion-icon">🆕</div>
+          <div class="inv-opcion-text">
+            <strong>Crear Producto Nuevo</strong>
+            <small>Registrar producto con este código</small>
+          </div>
+        </button>
+        
+        <button class="inv-opcion-btn secondary" onclick="mostrarProductosParaAsociar('${codigo}')">
+          <div class="inv-opcion-icon">🔗</div>
+          <div class="inv-opcion-text">
+            <strong>Asociar a Producto Existente</strong>
+            <small>Agregar como código adicional</small>
+          </div>
+        </button>
+      </div>
+    </div>
+  `, `
+    <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
+  `);
+}
+
+/**
+ * Crear producto con datos básicos y código asociado
+ */
+async function crearProductoRapido(codigo) {
+  hideModal();
+  
+  // Cargar proveedores
+  const proveedores = await InventoryDB.obtenerTodosProveedores();
+  
+  showModal(`🆕 Crear Producto - Código: ${codigo}`, `
+    <form id="formProductoRapido" class="form-vertical">
+      <div class="inv-codigo-display">
+        <div class="inv-codigo-escaneado">
+          <span class="inv-codigo-label">Código de barras:</span>
+          <span class="inv-codigo-valor">${codigo}</span>
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label>Nombre del Producto *</label>
+        <input type="text" name="nombre" required class="form-input" placeholder="Ej: Camisa Polo Azul" autofocus>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>Categoría</label>
+          <input type="text" name="categoria" class="form-input" list="categorias" placeholder="Ej: Ropa">
+          <datalist id="categorias">
+            <option value="Electrónica">
+            <option value="Hogar">
+            <option value="Ropa">
+            <option value="Alimentos">
+            <option value="Accesorios">
+            <option value="Calzado">
+          </datalist>
+        </div>
+        <div class="form-group">
+          <label>Marca</label>
+          <input type="text" name="marca" class="form-input" placeholder="Ej: Nike">
+        </div>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>Costo Unitario *</label>
+          <input type="number" name="costo_unitario_base" required min="0" step="0.01" class="form-input" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label>Precio de Venta *</label>
+          <input type="number" name="precio_venta" required min="0" step="0.01" class="form-input" placeholder="0.00">
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label>Proveedor</label>
+        <select name="proveedor_principal_id" class="form-input">
+          <option value="">Sin proveedor</option>
+          ${proveedores.map(p => `<option value="${p.id}">${p.nombre}</option>`).join('')}
+        </select>
+      </div>
+      
+      <input type="hidden" name="codigo_barras" value="${codigo}">
+    </form>
+  `, `
+    <button type="button" class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
+    <button type="submit" form="formProductoRapido" class="inv-btn inv-btn-primary">✅ Crear Producto</button>
+  `);
+  
+  // Manejar envío del formulario
+  document.getElementById('formProductoRapido').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await procesarCreacionProductoRapido(new FormData(e.target));
+  });
+}
+
+/**
+ * Procesa la creación de producto rápido con código asociado
+ */
+async function procesarCreacionProductoRapido(formData) {
+  try {
+    showLoading(document.body, "Creando producto...");
+    
+    const productoData = {
+      nombre: formData.get('nombre'),
+      categoria: formData.get('categoria') || null,
+      marca: formData.get('marca') || null,
+      costo_unitario_base: parseFloat(formData.get('costo_unitario_base')) || 0,
+      precio_venta: parseFloat(formData.get('precio_venta')) || 0,
+      proveedor_principal_id: formData.get('proveedor_principal_id') || null,
+      stock_minimo: 5, // Valor por defecto
+      ubicacion: null,
+      stock_actual: 1 // Iniciar con 1 por el código escaneado
+    };
+    
+    // Crear producto
+    const result = await InventoryDB.crearProducto(productoData);
+    
+    if (result.success) {
+      // Asociar código de barras
+      const codigoBarras = formData.get('codigo_barras');
+      const codigoResult = await InventoryDB.asociarCodigoBarras(result.producto.id, codigoBarras);
+      
+      if (codigoResult.success) {
+        hideModal();
+        hideLoading();
+        showToast(`✅ Producto "${productoData.nombre}" creado y código asociado`, "success");
+        
+        // Recargar vista de productos
+        loadView('productos');
+      } else {
+        throw new Error(codigoResult.error || 'Error al asociar código de barras');
+      }
+    } else {
+      throw new Error(result.error || 'Error al crear producto');
+    }
+    
+  } catch (error) {
+    hideLoading();
+    Logger.error("Error al crear producto rápido:", error);
+    showToast("Error: " + error.message, "error");
+  }
+}
+
+/**
+ * Muestra lista de productos existentes para asociar código
+ */
+async function mostrarProductosParaAsociar(codigo) {
+  hideModal();
+  
+  try {
+    showLoading(document.body, "Cargando productos...");
+    const productos = await InventoryDB.obtenerTodosProductos();
+    hideLoading();
+    
+    if (productos.length === 0) {
+      showToast("No hay productos registrados. Crea uno primero.", "info");
+      setTimeout(() => crearProductoRapido(codigo), 500);
+      return;
+    }
+    
+    showModal(`🔗 Asociar Código: ${codigo}`, `
+      <div class="inv-codigo-display">
+        <div class="inv-codigo-escaneado">
+          <span class="inv-codigo-label">Código a asociar:</span>
+          <span class="inv-codigo-valor">${codigo}</span>
+        </div>
+      </div>
+      
+      <div class="inv-productos-lista">
+        <div class="inv-buscar-producto">
+          <input type="text" id="buscarProductoAsociar" placeholder="🔍 Buscar producto..." class="form-input">
+        </div>
+        
+        <div class="inv-productos-grid" id="productosParaAsociar">
+          ${productos.map(p => `
+            <div class="inv-producto-card" onclick="asociarCodigoAProducto('${codigo}', ${p.id})">
+              <div class="inv-producto-info">
+                <strong>${p.nombre}</strong>
+                <div class="inv-producto-detalles">
+                  <span>Stock: ${p.stock_actual || 0}</span>
+                  ${p.categoria ? `<span>${p.categoria}</span>` : ''}
+                  ${p.marca ? `<span>${p.marca}</span>` : ''}
+                </div>
+              </div>
+              <div class="inv-producto-accion">→</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `, `
+      <button class="inv-btn inv-btn-secondary" onclick="hideModal()">Cancelar</button>
+    `);
+    
+    // Funcionalidad de búsqueda
+    document.getElementById('buscarProductoAsociar').addEventListener('input', (e) => {
+      const filtro = e.target.value.toLowerCase();
+      const cards = document.querySelectorAll('.inv-producto-card');
+      
+      cards.forEach(card => {
+        const texto = card.textContent.toLowerCase();
+        card.style.display = texto.includes(filtro) ? 'flex' : 'none';
+      });
+    });
+    
+  } catch (error) {
+    hideLoading();
+    Logger.error("Error al cargar productos:", error);
+    showToast("Error al cargar productos: " + error.message, "error");
+  }
+}
+
+/**
+ * Asociar código de barras a producto existente
+ */
+async function asociarCodigoAProducto(codigo, productoId) {
+  try {
+    showLoading(document.body, "Asociando código...");
+    
+    const result = await InventoryDB.asociarCodigoBarrasEIncrementarStock(productoId, codigo);
+    
+    if (result.success) {
+      hideModal();
+      hideLoading();
+      showToast(`✅ Código asociado - Nuevo stock: ${result.nuevoStock}`, "success");
+      
+      // Recargar vista actual
+      const currentView = document.querySelector('.inv-view.active')?.id;
+      if (currentView) {
+        loadView(currentView.replace('view', ''));
+      }
+    } else {
+      throw new Error(result.error || 'Error al asociar código');
+    }
+    
+  } catch (error) {
+    hideLoading();
+    Logger.error("Error al asociar código:", error);
+    showToast("Error: " + error.message, "error");
+  }
+}
+
+// Nuevas funciones de feedback para el scanner
+function playScanSound() {
+  try {
+    // Crear sonido de beep con Web Audio API
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    oscillator.frequency.value = 2000; // Frecuencia del beep
+    oscillator.type = 'sine';
+    
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.1, audioContext.currentTime + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+    
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.1);
+  } catch (e) {
+    // Fallback silencioso si no hay soporte de audio
+    console.log('Audio no soportado');
+  }
+}
+
+function vibrateDevice() {
+  try {
+    if (navigator.vibrate) {
+      navigator.vibrate([100, 50, 100]); // Patrón de vibración
+    }
+  } catch (e) {
+    // Vibración no soportada
+    console.log('Vibración no soportada');
+  }
+}
+
+function showScanFeedback(codigo) {
+  const scannerResult = document.getElementById('scannerResult');
+  if (scannerResult) {
+    scannerResult.textContent = codigo;
+    scannerResult.classList.add('inv-scanner-result-show');
+    
+    // Ocultar después de 2 segundos
+    setTimeout(() => {
+      scannerResult.classList.remove('inv-scanner-result-show');
+    }, 2000);
+  }
+}
+
+function showScanSuccess() {
+  const scannerOverlay = document.getElementById('scannerOverlay');
+  if (scannerOverlay) {
+    scannerOverlay.classList.add('inv-scanner-success');
+    
+    // Remover clase después de la animación
+    setTimeout(() => {
+      scannerOverlay.classList.remove('inv-scanner-success');
+    }, 600);
+  }
+}
+
+function showScanError() {
+  const scannerOverlay = document.getElementById('scannerOverlay');
+  if (scannerOverlay) {
+    scannerOverlay.classList.add('inv-scanner-error');
+    
+    // Remover clase después de la animación
+    setTimeout(() => {
+      scannerOverlay.classList.remove('inv-scanner-error');
+    }, 600);
   }
 }
 
@@ -2989,6 +5786,9 @@ function closeScanner() {
   scannerActive = false;
   scannerStartTime = 0; // Reset timer
   scannerTipsShown = false; // Reset tips
+  scannerAttemptCount = 0; // Reset contador
+  
+  Logger.info(`📊 Total de intentos en esta sesión: ${scannerAttemptCount}`);
   
   if (scannerStream) {
     scannerStream.getTracks().forEach(track => track.stop());
@@ -3060,10 +5860,51 @@ if (scannerClose) {
 if (scannerManualInput) {
   scannerManualInput.addEventListener("click", () => {
     closeScanner();
-    const codigo = prompt("Ingresa el código de barras manualmente:");
-    if (codigo) {
-      processScan(codigo);
+    showScannerFallback();
+  });
+}
+
+// Botón de información del scanner
+const scannerInfoBtn = document.getElementById('scannerInfoBtn');
+if (scannerInfoBtn) {
+  scannerInfoBtn.addEventListener('click', () => {
+    showModal('ℹ️ Información del Scanner', `
+      <div style="text-align: left; line-height: 1.6;">
+        <h4>🔍 Cómo usar el scanner:</h4>
+        <ul>
+          <li><strong>Posición:</strong> Mantén el código de barras a 10-30cm de la cámara</li>
+          <li><strong>Iluminación:</strong> Asegúrate de tener buena luz, evita reflejos</li>
+          <li><strong>Estabilidad:</strong> Mantén el dispositivo firme para mejor enfoque</li>
+          <li><strong>Orientación:</strong> El código puede estar horizontal o vertical</li>
+        </ul>
+        
+        <h4 style="margin-top: 1rem;">⚙️ Compatibilidad:</h4>
+        <ul>
+          <li><strong>Chrome/Edge:</strong> Usa BarcodeDetector nativo (más rápido)</li>
+          <li><strong>Safari/Firefox:</strong> Usa ZXing como fallback</li>
+          <li><strong>Formatos soportados:</strong> EAN-13, EAN-8, Code-128, QR</li>
+        </ul>
+      </div>
+    `, `<button onclick="hideModal()" class="inv-btn inv-btn-primary">Entendido</button>`);
+  });
+}
+
+// Input manual mejorado con botón clear
+const clearManualInput = document.getElementById('clearManualInput');
+
+if (manualBarcodeInput && clearManualInput) {
+  manualBarcodeInput.addEventListener('input', (e) => {
+    if (e.target.value.length > 0) {
+      clearManualInput.style.display = 'block';
+    } else {
+      clearManualInput.style.display = 'none';
     }
+  });
+  
+  clearManualInput.addEventListener('click', () => {
+    manualBarcodeInput.value = '';
+    clearManualInput.style.display = 'none';
+    manualBarcodeInput.focus();
   });
 }
 
@@ -3117,8 +5958,153 @@ function openAssociateBarcode(productoId) {
 }
 
 async function viewProducto(id) {
-  // Implementar vista de detalle de producto
-  showToast("Vista de detalle en desarrollo", "info");
+  try {
+    const producto = await InventoryDB.obtenerProductoPorId(id);
+    
+    if (!producto) {
+      showToast("❌ Producto no encontrado", "error");
+      return;
+    }
+    
+    const stockBajo = parseFloat(producto.stock_actual) < parseFloat(producto.stock_minimo);
+    const stockCero = parseFloat(producto.stock_actual) === 0;
+    
+    showModal(`📦 ${producto.nombre}`, `
+      <div class="inv-producto-detail">
+        <!-- Información Principal -->
+        <div class="inv-producto-info-grid">
+          <!-- Stock Destacado -->
+          <div class="inv-stock-card ${stockCero ? 'stock-zero' : stockBajo ? 'stock-low' : 'stock-ok'}">
+            <div class="inv-stock-label">Stock Actual</div>
+            <div class="inv-stock-value" id="productoStockActual">${producto.stock_actual}</div>
+            <div class="inv-stock-status">
+              ${stockCero ? '❌ Sin stock' : stockBajo ? '⚠️ Stock bajo' : '✅ Stock normal'}
+            </div>
+          </div>
+          
+          <!-- Información Básica -->
+          <div class="inv-info-section">
+            <div class="inv-info-row">
+              <span class="inv-info-label">SKU:</span>
+              <span class="inv-info-value">${producto.sku}</span>
+            </div>
+            ${producto.categoria ? `
+              <div class="inv-info-row">
+                <span class="inv-info-label">Categoría:</span>
+                <span class="inv-info-value">${producto.categoria}</span>
+              </div>
+            ` : ''}
+            ${producto.marca ? `
+              <div class="inv-info-row">
+                <span class="inv-info-label">Marca:</span>
+                <span class="inv-info-value">${producto.marca}</span>
+              </div>
+            ` : ''}
+            <div class="inv-info-row">
+              <span class="inv-info-label">Precio:</span>
+              <span class="inv-info-value" style="color: var(--success); font-weight: 600;">
+                $${parseFloat(producto.precio_sugerido).toLocaleString('es-CO', {minimumFractionDigits: 0})}
+              </span>
+            </div>
+            ${producto.ubicacion ? `
+              <div class="inv-info-row">
+                <span class="inv-info-label">Ubicación:</span>
+                <span class="inv-info-value">${producto.ubicacion}</span>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+        
+        <!-- Sección de Códigos de Barras -->
+        <div class="inv-codigos-section">
+          <div class="inv-section-header">
+            <h3 class="inv-section-title">🏷️ Códigos de Barras Asociados</h3>
+            <span class="inv-badge inv-badge-primary">${producto.inv_codigos_barras?.length || 0} códigos</span>
+          </div>
+          
+          <!-- Alerta informativa -->
+          <div class="inv-alert inv-alert-info" style="margin-bottom: 1rem;">
+            <strong>ℹ️ Gestión de stock por códigos:</strong><br>
+            Cada código de barras escaneado representa una unidad del producto.<br>
+            El stock aumenta automáticamente con cada código asociado.
+          </div>
+          
+          <!-- Botón de Escaneo -->
+          <button 
+            class="inv-btn inv-btn-primary inv-btn-large" 
+            onclick="currentProductoForAssociation=${id}; scannerMode='asociar'; openScanner()"
+            style="width: 100%; margin-bottom: 1.5rem; padding: 1.5rem; font-size: 1.125rem;"
+          >
+            📷 Escanear Código de Barras
+          </button>
+          
+          <!-- Lista de Códigos -->
+          <div class="inv-codigos-list" id="listaCodigosBarras">
+            ${producto.inv_codigos_barras && producto.inv_codigos_barras.length > 0 
+              ? producto.inv_codigos_barras.map((cb, idx) => `
+                  <div class="inv-codigo-item">
+                    <span class="inv-codigo-numero">#${idx + 1}</span>
+                    <span class="inv-codigo-valor">${cb.codigo}</span>
+                    <button 
+                      class="inv-btn-icon-danger" 
+                      onclick="eliminarCodigoBarras(${cb.id}, ${id})" 
+                      title="Eliminar código"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                `)
+
+.join('')
+              : '<p style="color: var(--gray-500); text-align: center; padding: 2rem;">No hay códigos asociados aún.<br>Comienza escaneando códigos para asociar.</p>'
+            }
+          </div>
+        </div>
+        
+        <!-- Acciones Adicionales -->
+        <div class="inv-actions-grid" style="margin-top: 1.5rem;">
+          <button class="inv-btn inv-btn-secondary" onclick="editProducto(${id})">
+            ✏️ Editar Producto
+          </button>
+          <button class="inv-btn inv-btn-secondary" onclick="adjustStock(${id})">
+            📊 Ajustar Stock
+          </button>
+        </div>
+      </div>
+    `, `
+      <button type="button" class="btn-secondary" onclick="hideModal(); loadView('productos')">
+        Cerrar
+      </button>
+    `);
+    
+    // Guardar referencia global para el scanner
+    currentProductoForAssociation = id;
+    
+  } catch (error) {
+    Logger.error("Error al ver producto:", error);
+    showToast("Error al cargar producto", "error");
+  }
+}
+
+async function eliminarCodigoBarras(codigoId, productoId) {
+  if (!confirm("¿Estás seguro de eliminar este código de barras?\n\n⚠️ IMPORTANTE: Esto NO reducirá el stock automáticamente.\nDeberás ajustar el stock manualmente si lo deseas.")) {
+    return;
+  }
+  
+  try {
+    const result = await InventoryDB.eliminarCodigoBarras(codigoId);
+    
+    if (result.success) {
+      showToast("✅ Código eliminado exitosamente", "success");
+      // Recargar la vista del producto
+      viewProducto(productoId);
+    } else {
+      throw new Error(result.error);
+    }
+  } catch (error) {
+    Logger.error("Error al eliminar código:", error);
+    showToast("❌ Error al eliminar código", "error");
+  }
 }
 
 async function editProducto(id) {
@@ -3236,8 +6222,117 @@ async function viewVenta(id) {
 }
 
 async function viewCompra(id) {
-  // Implementar vista de detalle de compra
-  showToast("Vista de detalle en desarrollo", "info");
+  try {
+    showLoading(document.body, "Cargando detalle de compra...");
+    const compra = await InventoryDB.obtenerCompraPorId(id);
+    
+    if (!compra) {
+      showToast("Compra no encontrada", "error");
+      return;
+    }
+    
+    const items = compra.inv_compra_items || [];
+    const subtotal = items.reduce((sum, item) => sum + (parseFloat(item.cantidad || 0) * parseFloat(item.costo_unitario || 0)), 0);
+    const gastosAdicionales = parseFloat(compra.total || 0) - subtotal;
+    
+    showModal(`🛒 Detalle de Compra #${compra.id}`, `
+      <div class="inv-purchase-detail-modal">
+        <!-- Header de la compra -->
+        <div class="inv-purchase-detail-header">
+          <div class="inv-purchase-main-info">
+            <div class="inv-purchase-id-badge">#${compra.id}</div>
+            <div class="inv-purchase-date">
+              <span class="inv-purchase-date-icon">📅</span>
+              <span>${formatDate(compra.fecha)}</span>
+            </div>
+          </div>
+          <div class="inv-purchase-total-badge">
+            ${formatCurrency(compra.total || 0)}
+          </div>
+        </div>
+        
+        <!-- Info de la compra -->
+        <div class="inv-purchase-info-grid">
+          <div class="inv-purchase-info-card">
+            <div class="inv-purchase-info-label">🏭 Proveedor</div>
+            <div class="inv-purchase-info-value">${compra.proveedor?.nombre || 'Sin proveedor'}</div>
+          </div>
+          <div class="inv-purchase-info-card">
+            <div class="inv-purchase-info-label">📄 Referencia</div>
+            <div class="inv-purchase-info-value">${compra.referencia || 'Sin referencia'}</div>
+          </div>
+          <div class="inv-purchase-info-card">
+            <div class="inv-purchase-info-label">💳 Método de Pago</div>
+            <div class="inv-purchase-info-value">${compra.metodo_pago || 'No especificado'}</div>
+          </div>
+          <div class="inv-purchase-info-card">
+            <div class="inv-purchase-info-label">📦 Total Items</div>
+            <div class="inv-purchase-info-value">${items.length} productos</div>
+          </div>
+        </div>
+        
+        <!-- Items de la compra -->
+        <div class="inv-purchase-items-section">
+          <h4 class="inv-purchase-items-title">
+            <span>📦</span>
+            <span>Productos Comprados</span>
+          </h4>
+          
+          <div class="inv-purchase-items-list">
+            ${items.map(item => `
+              <div class="inv-purchase-item-card">
+                <div class="inv-purchase-item-info">
+                  <div class="inv-purchase-item-name">${item.inv_productos?.nombre || 'Producto no encontrado'}</div>
+                  <div class="inv-purchase-item-meta">
+                    <span class="inv-purchase-item-quantity">Cantidad: ${parseFloat(item.cantidad || 0).toFixed(2)}</span>
+                    <span class="inv-purchase-item-unit-cost">${formatCurrency(item.costo_unitario || 0)} c/u</span>
+                  </div>
+                </div>
+                <div class="inv-purchase-item-total">
+                  ${formatCurrency((parseFloat(item.cantidad || 0) * parseFloat(item.costo_unitario || 0)))}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        
+        <!-- Resumen financiero -->
+        <div class="inv-purchase-summary">
+          <div class="inv-purchase-summary-row">
+            <span>Subtotal productos:</span>
+            <span>${formatCurrency(subtotal)}</span>
+          </div>
+          ${gastosAdicionales > 0 ? `
+            <div class="inv-purchase-summary-row">
+              <span>Gastos adicionales:</span>
+              <span>${formatCurrency(gastosAdicionales)}</span>
+            </div>
+          ` : ''}
+          <div class="inv-purchase-summary-row inv-purchase-summary-total">
+            <span>Total pagado:</span>
+            <span>${formatCurrency(compra.total || 0)}</span>
+          </div>
+        </div>
+        
+        <!-- Información adicional -->
+        ${compra.notas ? `
+          <div class="inv-purchase-notes">
+            <h4>📝 Notas</h4>
+            <p>${compra.notas}</p>
+          </div>
+        ` : ''}
+      </div>
+    `, `
+      <button onclick="hideModal()" class="inv-btn inv-btn-secondary">Cerrar</button>
+      ${compra.referencia ? `<button onclick="window.print()" class="inv-btn inv-btn-outline">🖨️ Imprimir</button>` : ''}
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al cargar detalle de compra:", error);
+    showToast("Error al cargar el detalle de la compra", "error");
+  } finally {
+    hideLoading();
+  }
 }
 
 async function editProveedor(id) {
@@ -3245,52 +6340,894 @@ async function editProveedor(id) {
   showToast("Edición en desarrollo", "info");
 }
 
+// ========== FUNCIONES AUXILIARES PARA COMPRAS ==========
+function renderComprasCardsMobile(compras) {
+  if (compras.length === 0) {
+    return '<div class="inv-empty-message">No hay compras registradas</div>';
+  }
+
+  return compras.map(compra => `
+    <div class="inv-purchase-card-mobile" onclick="viewCompra(${compra.id})">
+      <div class="inv-purchase-card-header">
+        <div class="inv-purchase-card-id">#${compra.id}</div>
+        <div class="inv-purchase-card-date">${formatDate(compra.fecha)}</div>
+      </div>
+      
+      <div class="inv-purchase-card-info">
+        <div class="inv-purchase-card-supplier">
+          <span class="inv-purchase-card-icon">🏭</span>
+          <span>${compra.proveedor?.nombre || 'Sin proveedor'}</span>
+        </div>
+        ${compra.referencia ? `
+          <div class="inv-purchase-card-reference">
+            <span class="inv-purchase-card-icon">📄</span>
+            <span>${compra.referencia}</span>
+          </div>
+        ` : ''}
+      </div>
+      
+      <div class="inv-purchase-card-footer">
+        <div class="inv-purchase-card-items">
+          <span class="inv-purchase-card-icon">📦</span>
+          <span>${compra.inv_compra_items?.length || 0} productos</span>
+        </div>
+        <div class="inv-purchase-card-total">
+          ${formatCurrency(compra.total || 0)}
+        </div>
+      </div>
+      
+      <div class="inv-purchase-card-ripple"></div>
+    </div>
+  `).join('');
+}
+
+function renderComprasCardsDesktop(compras) {
+  if (compras.length === 0) {
+    return '<div class="inv-empty-message-desktop">No hay compras registradas</div>';
+  }
+
+  return compras.map(compra => `
+    <div class="inv-purchase-card-desktop" onclick="viewCompra(${compra.id})">
+      <div class="inv-purchase-card-desktop-header">
+        <div class="inv-purchase-card-desktop-id">#${compra.id}</div>
+        <div class="inv-purchase-card-desktop-date">
+          <span class="inv-icon">📅</span>
+          <span>${formatDate(compra.fecha)}</span>
+        </div>
+      </div>
+      
+      <div class="inv-purchase-card-desktop-body">
+        <div class="inv-purchase-info-row">
+          <span class="inv-icon">🏭</span>
+          <span class="inv-purchase-label">Proveedor:</span>
+          <span class="inv-purchase-value">${compra.proveedor?.nombre || 'Sin proveedor'}</span>
+        </div>
+        
+        ${compra.referencia ? `
+          <div class="inv-purchase-info-row">
+            <span class="inv-icon">📄</span>
+            <span class="inv-purchase-label">Referencia:</span>
+            <span class="inv-purchase-value">${compra.referencia}</span>
+          </div>
+        ` : ''}
+        
+        <div class="inv-purchase-info-row">
+          <span class="inv-icon">💳</span>
+          <span class="inv-purchase-label">Método:</span>
+          <span class="inv-purchase-value">${compra.metodo_pago || 'No especificado'}</span>
+        </div>
+      </div>
+      
+      <div class="inv-purchase-card-desktop-footer">
+        <div class="inv-purchase-items-count">
+          <span class="inv-icon">📦</span>
+          <span>${compra.inv_compra_items?.length || 0} productos</span>
+        </div>
+        <div class="inv-purchase-total-amount">
+          ${formatCurrency(compra.total || 0)}
+        </div>
+      </div>
+      
+      <div class="inv-purchase-card-desktop-hover"></div>
+    </div>
+  `).join('');
+}
+
+function setupComprasFiltering(comprasOriginal) {
+  const isMobile = window.innerWidth <= 768;
+  const searchId = isMobile ? 'searchComprasMobile' : 'searchComprasDesktop';
+  const filterProveedorId = isMobile ? 'filterProveedorMobile' : 'filterProveedorDesktop';
+  const filterMesId = isMobile ? 'filterMesMobile' : 'filterMesDesktop';
+  const containerId = isMobile ? 'purchasesList' : 'purchasesGrid';
+  const emptyStateId = isMobile ? 'emptyStatePurchases' : 'emptyStatePurchasesDesktop';
+  
+  function applyFilters() {
+    const searchTerm = document.getElementById(searchId)?.value.toLowerCase() || '';
+    const proveedorFilter = document.getElementById(filterProveedorId)?.value || '';
+    const mesFilter = document.getElementById(filterMesId)?.value || '';
+    
+    let filtered = comprasOriginal.filter(compra => {
+      // Filtro de búsqueda
+      const matchesSearch = !searchTerm || 
+        compra.referencia?.toLowerCase().includes(searchTerm) ||
+        compra.proveedor?.nombre?.toLowerCase().includes(searchTerm) ||
+        compra.id?.toString().includes(searchTerm);
+      
+      // Filtro de proveedor
+      const matchesProveedor = !proveedorFilter || 
+        compra.proveedor?.nombre === proveedorFilter;
+      
+      // Filtro de mes
+      let matchesMes = true;
+      if (mesFilter) {
+        const fechaCompra = new Date(compra.fecha);
+        const ahora = new Date();
+        
+        switch (mesFilter) {
+          case 'este-mes':
+            matchesMes = fechaCompra.getMonth() === ahora.getMonth() && 
+                        fechaCompra.getFullYear() === ahora.getFullYear();
+            break;
+          case 'ultimo-mes':
+            const ultimoMes = new Date(ahora.getFullYear(), ahora.getMonth() - 1);
+            matchesMes = fechaCompra.getMonth() === ultimoMes.getMonth() && 
+                        fechaCompra.getFullYear() === ultimoMes.getFullYear();
+            break;
+          case 'ultimos-3-meses':
+            const tresMesesAtras = new Date();
+            tresMesesAtras.setMonth(ahora.getMonth() - 3);
+            matchesMes = fechaCompra >= tresMesesAtras;
+            break;
+        }
+      }
+      
+      return matchesSearch && matchesProveedor && matchesMes;
+    });
+    
+    // Renderizar resultados
+    const container = document.getElementById(containerId);
+    const emptyState = document.getElementById(emptyStateId);
+    
+    if (filtered.length > 0) {
+      container.innerHTML = isMobile ? 
+        renderComprasCardsMobile(filtered) : 
+        renderComprasCardsDesktop(filtered);
+      container.style.display = 'block';
+      emptyState.style.display = 'none';
+    } else {
+      container.style.display = 'none';
+      emptyState.style.display = 'flex';
+    }
+  }
+  
+  // Event listeners
+  document.getElementById(searchId)?.addEventListener('input', applyFilters);
+  document.getElementById(filterProveedorId)?.addEventListener('change', applyFilters);
+  document.getElementById(filterMesId)?.addEventListener('change', applyFilters);
+}
+
+function formatCurrencyShort(amount) {
+  const num = parseFloat(amount || 0);
+  if (num >= 1000000) {
+    return `$${(num / 1000000).toFixed(1)}M`;
+  } else if (num >= 1000) {
+    return `$${(num / 1000).toFixed(0)}K`;
+  }
+  return formatCurrency(num);
+}
+
 // Reportes
 async function generarReporteUtilidades() {
-  showToast("Generando reporte...", "info");
-  // Implementar
+  showToast("Generando reporte de utilidades...", "info");
+  
+  try {
+    const ventas = await InventoryDB.obtenerTodasVentas();
+    
+    if (ventas.length === 0) {
+      showToast("No hay datos de ventas para generar el reporte", "warning");
+      return;
+    }
+    
+    // Calcular utilidades por producto
+    const utilidadesPorProducto = {};
+    let utilidadTotal = 0;
+    let ventasTotal = 0;
+    
+    ventas.forEach(venta => {
+      const utilidad = parseFloat(venta.precio_venta || 0) - parseFloat(venta.precio_compra || 0);
+      utilidadTotal += utilidad;
+      ventasTotal += parseFloat(venta.precio_venta || 0);
+      
+      if (!utilidadesPorProducto[venta.producto_id]) {
+        utilidadesPorProducto[venta.producto_id] = {
+          nombre: venta.inv_productos?.nombre || 'Producto Desconocido',
+          utilidad: 0,
+          unidadesVendidas: 0,
+          ventas: 0
+        };
+      }
+      
+      utilidadesPorProducto[venta.producto_id].utilidad += utilidad;
+      utilidadesPorProducto[venta.producto_id].unidadesVendidas += 1;
+      utilidadesPorProducto[venta.producto_id].ventas += parseFloat(venta.precio_venta || 0);
+    });
+    
+    const productosOrdenados = Object.values(utilidadesPorProducto)
+      .sort((a, b) => b.utilidad - a.utilidad);
+    
+    const margenPromedio = ventasTotal > 0 ? ((utilidadTotal / ventasTotal) * 100).toFixed(2) : 0;
+    
+    showModal("💰 Reporte de Utilidades", `
+      <div class="inv-report-modal">
+        <!-- Resumen de KPIs -->
+        <div class="inv-report-kpis">
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+            <div class="inv-report-kpi-label">Utilidad Total</div>
+            <div class="inv-report-kpi-value">${utilidadTotal.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div class="inv-report-kpi-label">Ventas Totales</div>
+            <div class="inv-report-kpi-value">${ventasTotal.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+            <div class="inv-report-kpi-label">Margen Promedio</div>
+            <div class="inv-report-kpi-value">${margenPromedio}%</div>
+          </div>
+        </div>
+        
+        <!-- Tabla de detalle -->
+        <div class="inv-report-table-container">
+          <h3 style="margin-top: 1.5rem; margin-bottom: 1rem; color: var(--inv-text-primary);">
+            📊 Utilidades por Producto
+          </h3>
+          <table class="inv-report-table">
+            <thead>
+              <tr>
+                <th>Producto</th>
+                <th>Unidades</th>
+                <th>Ventas</th>
+                <th>Utilidad</th>
+                <th>Margen %</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${productosOrdenados.map(p => {
+                const margen = p.ventas > 0 ? ((p.utilidad / p.ventas) * 100).toFixed(2) : 0;
+                return `
+                  <tr>
+                    <td><strong>${p.nombre}</strong></td>
+                    <td>${p.unidadesVendidas}</td>
+                    <td>${p.ventas.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</td>
+                    <td style="color: ${p.utilidad >= 0 ? 'var(--inv-success)' : 'var(--inv-danger)'}; font-weight: 600;">
+                      ${p.utilidad.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+                    </td>
+                    <td><span class="inv-badge" style="background: ${margen >= 30 ? 'var(--inv-success-light)' : margen >= 15 ? 'var(--inv-warning-light)' : 'var(--inv-danger-light)'};">${margen}%</span></td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `, `
+      <button onclick="window.print()" class="inv-btn inv-btn-secondary">🖨️ Imprimir</button>
+      <button onclick="hideModal()" class="inv-btn inv-btn-primary">Cerrar</button>
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al generar reporte de utilidades:", error);
+    showToast("Error al generar el reporte", "error");
+  }
 }
 
 async function generarReporteRotacion() {
-  showToast("Generando reporte...", "info");
-  // Implementar
+  showToast("Generando reporte de rotación...", "info");
+  
+  try {
+    const productos = await InventoryDB.obtenerTodosProductos();
+    const ventas = await InventoryDB.obtenerTodasVentas();
+    
+    // Contar ventas por producto
+    const ventasPorProducto = {};
+    ventas.forEach(venta => {
+      if (!ventasPorProducto[venta.producto_id]) {
+        ventasPorProducto[venta.producto_id] = 0;
+      }
+      ventasPorProducto[venta.producto_id]++;
+    });
+    
+    // Clasificar productos
+    const productosConVentas = productos.map(p => ({
+      ...p,
+      totalVentas: ventasPorProducto[p.id] || 0,
+      rotacion: ventasPorProducto[p.id] 
+        ? (parseFloat(p.stock_actual) > 0 
+            ? (ventasPorProducto[p.id] / parseFloat(p.stock_actual)).toFixed(2) 
+            : '∞') 
+        : 0
+    }));
+    
+    const masVendidos = productosConVentas
+      .filter(p => p.totalVentas > 0)
+      .sort((a, b) => b.totalVentas - a.totalVentas)
+      .slice(0, 10);
+    
+    const menosVendidos = productosConVentas
+      .filter(p => p.totalVentas === 0 && parseFloat(p.stock_actual) > 0)
+      .sort((a, b) => parseFloat(b.stock_actual) - parseFloat(a.stock_actual))
+      .slice(0, 10);
+    
+    showModal("🔄 Reporte de Rotación de Inventario", `
+      <div class="inv-report-modal">
+        <!-- Métricas -->
+        <div class="inv-report-kpis">
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+            <div class="inv-report-kpi-label">Productos Activos</div>
+            <div class="inv-report-kpi-value">${masVendidos.length}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+            <div class="inv-report-kpi-label">Sin Movimiento</div>
+            <div class="inv-report-kpi-value">${menosVendidos.length}</div>
+          </div>
+        </div>
+        
+        <!-- Productos más vendidos -->
+        <div class="inv-report-section">
+          <h3 class="inv-report-section-title">🏆 Top 10 Productos Más Vendidos</h3>
+          ${masVendidos.length > 0 ? `
+            <table class="inv-report-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Producto</th>
+                  <th>Ventas</th>
+                  <th>Stock Actual</th>
+                  <th>Índice Rotación</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${masVendidos.map((p, idx) => `
+                  <tr>
+                    <td><span class="inv-badge inv-badge-primary">${idx + 1}</span></td>
+                    <td><strong>${p.nombre}</strong></td>
+                    <td style="color: var(--inv-success); font-weight: 600;">${p.totalVentas} unidades</td>
+                    <td>${p.stock_actual}</td>
+                    <td><span class="inv-badge inv-badge-success">${p.rotacion}</span></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          ` : '<p class="inv-empty-message">No hay productos con ventas registradas</p>'}
+        </div>
+        
+        <!-- Productos sin movimiento -->
+        <div class="inv-report-section">
+          <h3 class="inv-report-section-title">⚠️ Productos Sin Movimiento (Con Stock)</h3>
+          ${menosVendidos.length > 0 ? `
+            <table class="inv-report-table">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th>Stock Actual</th>
+                  <th>Precio</th>
+                  <th>Valor Inmovilizado</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${menosVendidos.map(p => {
+                  const valorInmovilizado = parseFloat(p.stock_actual) * parseFloat(p.precio_sugerido || 0);
+                  return `
+                    <tr>
+                      <td><strong>${p.nombre}</strong></td>
+                      <td style="color: var(--inv-warning); font-weight: 600;">${p.stock_actual}</td>
+                      <td>${parseFloat(p.precio_sugerido).toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</td>
+                      <td style="color: var(--inv-danger);">${valorInmovilizado.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+            <div class="inv-alert inv-alert-warning" style="margin-top: 1rem;">
+              <strong>💡 Recomendación:</strong> Considere estrategias de descuento o promociones para estos productos
+            </div>
+          ` : '<p class="inv-empty-message">¡Excelente! Todos los productos tienen movimiento</p>'}
+        </div>
+      </div>
+    `, `
+      <button onclick="window.print()" class="inv-btn inv-btn-secondary">🖨️ Imprimir</button>
+      <button onclick="hideModal()" class="inv-btn inv-btn-primary">Cerrar</button>
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al generar reporte de rotación:", error);
+    showToast("Error al generar el reporte", "error");
+  }
 }
 
 async function generarReporteStockBajo() {
   const productos = await InventoryDB.obtenerTodosProductos({ stockBajo: true });
   
   if (productos.length === 0) {
-    showToast("No hay productos con stock bajo", "success");
+    showToast("✅ No hay productos con stock bajo", "success");
     return;
   }
   
+  // Calcular valor a reponer
+  let valorTotalReponer = 0;
+  const productosConCalculo = productos.map(p => {
+    const cantidadReponer = parseFloat(p.stock_minimo) - parseFloat(p.stock_actual);
+    const valorReponer = cantidadReponer * parseFloat(p.precio_sugerido || 0);
+    valorTotalReponer += valorReponer;
+    return {
+      ...p,
+      cantidadReponer,
+      valorReponer
+    };
+  });
+  
   showModal("⚠️ Productos con Stock Bajo", `
-    <div class="table-responsive">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Producto</th>
-            <th>Stock Actual</th>
-            <th>Stock Mínimo</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${productos.map(p => `
+    <div class="inv-report-modal">
+      <!-- KPIs -->
+      <div class="inv-report-kpis">
+        <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+          <div class="inv-report-kpi-label">Productos Afectados</div>
+          <div class="inv-report-kpi-value">${productos.length}</div>
+        </div>
+        <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);">
+          <div class="inv-report-kpi-label">Valor a Reponer</div>
+          <div class="inv-report-kpi-value" style="font-size: 1.25rem;">
+            ${valorTotalReponer.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+          </div>
+        </div>
+      </div>
+      
+      <!-- Tabla -->
+      <div class="inv-report-table-container">
+        <table class="inv-report-table">
+          <thead>
             <tr>
-              <td>${p.nombre}</td>
-              <td class="text-warning"><strong>${p.stock_actual}</strong></td>
-              <td>${p.stock_minimo}</td>
+              <th>Producto</th>
+              <th>Stock Actual</th>
+              <th>Stock Mínimo</th>
+              <th>A Reponer</th>
+              <th>Valor Estimado</th>
             </tr>
-          `).join('')}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            ${productosConCalculo.map(p => `
+              <tr>
+                <td><strong>${p.nombre}</strong></td>
+                <td style="color: var(--inv-danger); font-weight: 600;">${p.stock_actual}</td>
+                <td>${p.stock_minimo}</td>
+                <td style="color: var(--inv-info); font-weight: 600;">${p.cantidadReponer}</td>
+                <td>${p.valorReponer.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      
+      <div class="inv-alert inv-alert-warning" style="margin-top: 1.5rem;">
+        <strong>⚠️ Acción Requerida:</strong> Estos productos necesitan reposición urgente
+      </div>
     </div>
-  `, `<button onclick="hideModal()" class="btn-primary">Cerrar</button>`);
+  `, `
+    <button onclick="window.print()" class="inv-btn inv-btn-secondary">🖨️ Imprimir</button>
+    <button onclick="hideModal()" class="inv-btn inv-btn-primary">Cerrar</button>
+  `);
 }
 
 async function generarReporteVentasMes() {
-  showToast("Generando reporte...", "info");
-  // Implementar
+  showToast("Generando reporte de ventas del mes...", "info");
+  
+  try {
+    const ventas = await InventoryDB.obtenerTodasVentas();
+    
+    // Filtrar ventas del mes actual
+    const mesActual = new Date().getMonth();
+    const añoActual = new Date().getFullYear();
+    
+    const ventasMes = ventas.filter(v => {
+      const fecha = new Date(v.fecha);
+      return fecha.getMonth() === mesActual && fecha.getFullYear() === añoActual;
+    });
+    
+    if (ventasMes.length === 0) {
+      showToast("No hay ventas registradas este mes", "warning");
+      return;
+    }
+    
+    // Calcular métricas
+    const totalVentas = ventasMes.reduce((sum, v) => sum + parseFloat(v.precio_venta || 0), 0);
+    const totalUtilidad = ventasMes.reduce((sum, v) => 
+      sum + (parseFloat(v.precio_venta || 0) - parseFloat(v.precio_compra || 0)), 0);
+    const promedioVenta = totalVentas / ventasMes.length;
+    
+    // Agrupar por día
+    const ventasPorDia = {};
+    ventasMes.forEach(v => {
+      const dia = new Date(v.fecha).getDate();
+      if (!ventasPorDia[dia]) {
+        ventasPorDia[dia] = { cantidad: 0, monto: 0 };
+      }
+      ventasPorDia[dia].cantidad++;
+      ventasPorDia[dia].monto += parseFloat(v.precio_venta || 0);
+    });
+    
+    const nombreMes = new Date().toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
+    
+    showModal(`📊 Ventas de ${nombreMes}`, `
+      <div class="inv-report-modal">
+        <!-- KPIs -->
+        <div class="inv-report-kpis">
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div class="inv-report-kpi-label">Total Ventas</div>
+            <div class="inv-report-kpi-value">${totalVentas.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+            <div class="inv-report-kpi-label">Utilidad</div>
+            <div class="inv-report-kpi-value">${totalUtilidad.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+            <div class="inv-report-kpi-label">Cantidad Ventas</div>
+            <div class="inv-report-kpi-value">${ventasMes.length}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);">
+            <div class="inv-report-kpi-label">Promedio por Venta</div>
+            <div class="inv-report-kpi-value" style="font-size: 1.25rem;">
+              ${promedioVenta.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+            </div>
+          </div>
+        </div>
+        
+        <!-- Ventas por día -->
+        <div class="inv-report-section">
+          <h3 class="inv-report-section-title">📅 Ventas por Día</h3>
+          <table class="inv-report-table">
+            <thead>
+              <tr>
+                <th>Día</th>
+                <th>Cantidad</th>
+                <th>Monto Total</th>
+                <th>Promedio</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Object.entries(ventasPorDia)
+                .sort(([a], [b]) => parseInt(b) - parseInt(a))
+                .map(([dia, datos]) => `
+                  <tr>
+                    <td><strong>Día ${dia}</strong></td>
+                    <td>${datos.cantidad} ventas</td>
+                    <td style="color: var(--inv-success); font-weight: 600;">
+                      ${datos.monto.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+                    </td>
+                    <td>${(datos.monto / datos.cantidad).toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}</td>
+                  </tr>
+                `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `, `
+      <button onclick="window.print()" class="inv-btn inv-btn-secondary">🖨️ Imprimir</button>
+      <button onclick="hideModal()" class="inv-btn inv-btn-primary">Cerrar</button>
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al generar reporte de ventas del mes:", error);
+    showToast("Error al generar el reporte", "error");
+  }
+}
+
+async function generarReporteValorInventario() {
+  showToast("Generando reporte de valor de inventario...", "info");
+  
+  try {
+    const productos = await InventoryDB.obtenerTodosProductos();
+    
+    if (productos.length === 0) {
+      showToast("No hay productos en el inventario", "warning");
+      return;
+    }
+    
+    // Calcular valores
+    let valorTotal = 0;
+    let totalUnidades = 0;
+    const productosPorCategoria = {};
+    
+    productos.forEach(p => {
+      const stock = parseFloat(p.stock_actual || 0);
+      const precio = parseFloat(p.precio_sugerido || 0);
+      const valor = stock * precio;
+      
+      valorTotal += valor;
+      totalUnidades += stock;
+      
+      const categoria = p.categoria || 'Sin Categoría';
+      if (!productosPorCategoria[categoria]) {
+        productosPorCategoria[categoria] = { valor: 0, unidades: 0, productos: 0 };
+      }
+      
+      productosPorCategoria[categoria].valor += valor;
+      productosPorCategoria[categoria].unidades += stock;
+      productosPorCategoria[categoria].productos++;
+    });
+    
+    const valorPromedio = valorTotal / productos.length;
+    
+    showModal("💎 Valor del Inventario", `
+      <div class="inv-report-modal">
+        <!-- KPIs -->
+        <div class="inv-report-kpis">
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+            <div class="inv-report-kpi-label">Valor Total</div>
+            <div class="inv-report-kpi-value" style="font-size: 1.5rem;">
+              ${valorTotal.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+            </div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div class="inv-report-kpi-label">Total Productos</div>
+            <div class="inv-report-kpi-value">${productos.length}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+            <div class="inv-report-kpi-label">Total Unidades</div>
+            <div class="inv-report-kpi-value">${totalUnidades}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);">
+            <div class="inv-report-kpi-label">Valor Promedio</div>
+            <div class="inv-report-kpi-value" style="font-size: 1.25rem;">
+              ${valorPromedio.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+            </div>
+          </div>
+        </div>
+        
+        <!-- Por categoría -->
+        <div class="inv-report-section">
+          <h3 class="inv-report-section-title">🏷️ Valor por Categoría</h3>
+          <table class="inv-report-table">
+            <thead>
+              <tr>
+                <th>Categoría</th>
+                <th>Productos</th>
+                <th>Unidades</th>
+                <th>Valor Total</th>
+                <th>% del Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Object.entries(productosPorCategoria)
+                .sort(([,a], [,b]) => b.valor - a.valor)
+                .map(([categoria, datos]) => {
+                  const porcentaje = ((datos.valor / valorTotal) * 100).toFixed(2);
+                  return `
+                    <tr>
+                      <td><strong>${categoria}</strong></td>
+                      <td>${datos.productos}</td>
+                      <td>${datos.unidades}</td>
+                      <td style="color: var(--inv-success); font-weight: 600;">
+                        ${datos.valor.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+                      </td>
+                      <td><span class="inv-badge inv-badge-primary">${porcentaje}%</span></td>
+                    </tr>
+                  `;
+                }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `, `
+      <button onclick="window.print()" class="inv-btn inv-btn-secondary">🖨️ Imprimir</button>
+      <button onclick="hideModal()" class="inv-btn inv-btn-primary">Cerrar</button>
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al generar reporte de valor de inventario:", error);
+    showToast("Error al generar el reporte", "error");
+  }
+}
+
+async function generarReporteProveedores() {
+  showToast("Generando ranking de proveedores...", "info");
+  
+  try {
+    const proveedores = await InventoryDB.obtenerTodosProveedores();
+    const productos = await InventoryDB.obtenerTodosProductos();
+    
+    if (proveedores.length === 0) {
+      showToast("No hay proveedores registrados", "warning");
+      return;
+    }
+    
+    // Análisis por proveedor
+    const analisisProveedores = proveedores.map(prov => {
+      const productosProveedor = productos.filter(p => p.proveedor_id === prov.id);
+      const totalProductos = productosProveedor.length;
+      const totalUnidades = productosProveedor.reduce((sum, p) => sum + parseFloat(p.stock_actual || 0), 0);
+      const valorInventario = productosProveedor.reduce((sum, p) => 
+        sum + (parseFloat(p.stock_actual || 0) * parseFloat(p.precio_sugerido || 0)), 0);
+      
+      return {
+        nombre: prov.nombre,
+        totalProductos,
+        totalUnidades,
+        valorInventario,
+        contacto: prov.telefono || prov.email || 'N/A'
+      };
+    }).sort((a, b) => b.valorInventario - a.valorInventario);
+    
+    const totalValor = analisisProveedores.reduce((sum, p) => sum + p.valorInventario, 0);
+    
+    showModal("🏭 Ranking de Proveedores", `
+      <div class="inv-report-modal">
+        <!-- KPIs -->
+        <div class="inv-report-kpis">
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div class="inv-report-kpi-label">Total Proveedores</div>
+            <div class="inv-report-kpi-value">${proveedores.length}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+            <div class="inv-report-kpi-label">Valor Total</div>
+            <div class="inv-report-kpi-value" style="font-size: 1.25rem;">
+              ${totalValor.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+            </div>
+          </div>
+        </div>
+        
+        <!-- Tabla -->
+        <div class="inv-report-section">
+          <h3 class="inv-report-section-title">🏆 Ranking por Valor de Inventario</h3>
+          <table class="inv-report-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Proveedor</th>
+                <th>Productos</th>
+                <th>Unidades</th>
+                <th>Valor Inventario</th>
+                <th>% del Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${analisisProveedores.map((prov, idx) => {
+                const porcentaje = totalValor > 0 ? ((prov.valorInventario / totalValor) * 100).toFixed(2) : 0;
+                return `
+                  <tr>
+                    <td><span class="inv-badge ${idx < 3 ? 'inv-badge-primary' : 'inv-badge-secondary'}">${idx + 1}</span></td>
+                    <td><strong>${prov.nombre}</strong><br><small style="color: var(--inv-text-secondary);">${prov.contacto}</small></td>
+                    <td>${prov.totalProductos}</td>
+                    <td>${prov.totalUnidades}</td>
+                    <td style="color: var(--inv-success); font-weight: 600;">
+                      ${prov.valorInventario.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+                    </td>
+                    <td><span class="inv-badge inv-badge-info">${porcentaje}%</span></td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `, `
+      <button onclick="window.print()" class="inv-btn inv-btn-secondary">🖨️ Imprimir</button>
+      <button onclick="hideModal()" class="inv-btn inv-btn-primary">Cerrar</button>
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al generar reporte de proveedores:", error);
+    showToast("Error al generar el reporte", "error");
+  }
+}
+
+async function generarReporteCategorias() {
+  showToast("Generando análisis por categorías...", "info");
+  
+  try {
+    const productos = await InventoryDB.obtenerTodosProductos();
+    const ventas = await InventoryDB.obtenerTodasVentas();
+    
+    // Agrupar por categoría
+    const categorias = {};
+    
+    productos.forEach(p => {
+      const cat = p.categoria || 'Sin Categoría';
+      if (!categorias[cat]) {
+        categorias[cat] = { 
+          productos: 0, 
+          stock: 0, 
+          valorInventario: 0,
+          ventas: 0,
+          utilidad: 0 
+        };
+      }
+      
+      categorias[cat].productos++;
+      categorias[cat].stock += parseFloat(p.stock_actual || 0);
+      categorias[cat].valorInventario += parseFloat(p.stock_actual || 0) * parseFloat(p.precio_sugerido || 0);
+    });
+    
+    // Agregar datos de ventas
+    ventas.forEach(v => {
+      const cat = v.inv_productos?.categoria || 'Sin Categoría';
+      if (categorias[cat]) {
+        categorias[cat].ventas += parseFloat(v.precio_venta || 0);
+        categorias[cat].utilidad += parseFloat(v.precio_venta || 0) - parseFloat(v.precio_compra || 0);
+      }
+    });
+    
+    const categoriasOrdenadas = Object.entries(categorias)
+      .sort(([,a], [,b]) => b.ventas - a.ventas);
+    
+    const totalVentas = Object.values(categorias).reduce((sum, c) => sum + c.ventas, 0);
+    const totalUtilidad = Object.values(categorias).reduce((sum, c) => sum + c.utilidad, 0);
+    
+    showModal("🏷️ Análisis por Categoría", `
+      <div class="inv-report-modal">
+        <!-- KPIs -->
+        <div class="inv-report-kpis">
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div class="inv-report-kpi-label">Total Categorías</div>
+            <div class="inv-report-kpi-value">${Object.keys(categorias).length}</div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+            <div class="inv-report-kpi-label">Ventas Totales</div>
+            <div class="inv-report-kpi-value" style="font-size: 1.25rem;">
+              ${totalVentas.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+            </div>
+          </div>
+          <div class="inv-report-kpi-card" style="--kpi-bg: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+            <div class="inv-report-kpi-label">Utilidad Total</div>
+            <div class="inv-report-kpi-value" style="font-size: 1.25rem;">
+              ${totalUtilidad.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+            </div>
+          </div>
+        </div>
+        
+        <!-- Tabla -->
+        <div class="inv-report-section">
+          <h3 class="inv-report-section-title">📊 Desempeño por Categoría</h3>
+          <table class="inv-report-table">
+            <thead>
+              <tr>
+                <th>Categoría</th>
+                <th>Productos</th>
+                <th>Stock</th>
+                <th>Ventas</th>
+                <th>Utilidad</th>
+                <th>% Ventas</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${categoriasOrdenadas.map(([cat, datos]) => {
+                const porcentaje = totalVentas > 0 ? ((datos.ventas / totalVentas) * 100).toFixed(2) : 0;
+                return `
+                  <tr>
+                    <td><strong>${cat}</strong></td>
+                    <td>${datos.productos}</td>
+                    <td>${datos.stock}</td>
+                    <td style="color: var(--inv-success); font-weight: 600;">
+                      ${datos.ventas.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+                    </td>
+                    <td style="color: var(--inv-primary); font-weight: 600;">
+                      ${datos.utilidad.toLocaleString('es-CO', {style: 'currency', currency: 'COP', minimumFractionDigits: 0})}
+                    </td>
+                    <td><span class="inv-badge inv-badge-primary">${porcentaje}%</span></td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `, `
+      <button onclick="window.print()" class="inv-btn inv-btn-secondary">🖨️ Imprimir</button>
+      <button onclick="hideModal()" class="inv-btn inv-btn-primary">Cerrar</button>
+    `);
+    
+  } catch (error) {
+    Logger.error("Error al generar reporte de categorías:", error);
+    showToast("Error al generar el reporte", "error");
+  }
 }
 
 function vibrate(duration = 100) {

@@ -101,6 +101,41 @@ async function buscarProductoPorSKU(sku) {
 }
 
 /**
+ * Obtener producto por ID
+ * @param {number} id - ID del producto
+ * @returns {Promise<Object|null>}
+ */
+async function obtenerProductoPorId(id) {
+  try {
+    const { data, error } = await supabaseClient
+      .from("inv_productos")
+      .select(`
+        *,
+        inv_codigos_barras(*)
+      `)
+      .eq("id", id)
+      .single();
+
+    if (error && error.code !== "PGRST116") throw error;
+    
+    // Obtener proveedor si existe
+    if (data && data.proveedor_principal_id) {
+      const { data: proveedor } = await supabaseClient
+        .from("inv_proveedores")
+        .select("id,nombre")
+        .eq("id", data.proveedor_principal_id)
+        .single();
+      data.proveedor = proveedor;
+    }
+    
+    return data;
+  } catch (error) {
+    Logger.error("Error al obtener producto por ID:", error);
+    return null;
+  }
+}
+
+/**
  * Buscar producto por código de barras
  * @param {string} codigo - Código de barras
  * @returns {Promise<Object|null>}
@@ -314,6 +349,88 @@ async function asociarCodigoBarras(productoId, codigo, tipo = null) {
     return { success: true, data };
   } catch (error) {
     Logger.error("Error al asociar código de barras:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Asociar código de barras e incrementar el stock automáticamente
+ * @param {number} productoId - ID del producto
+ * @param {string} codigo - Código de barras
+ * @param {string} tipo - Tipo de código (opcional)
+ * @returns {Promise<Object>}
+ */
+async function asociarCodigoBarrasEIncrementarStock(productoId, codigo, tipo = null) {
+  try {
+    // 1. Verificar que el producto existe
+    const { data: producto, error: productoError } = await supabaseClient
+      .from("inv_productos")
+      .select("id, nombre, stock_actual")
+      .eq("id", productoId)
+      .single();
+
+    if (productoError) throw productoError;
+    if (!producto) throw new Error("Producto no encontrado");
+
+    // 2. Verificar que el código no existe ya
+    const { data: codigoExistente } = await supabaseClient
+      .from("inv_codigos_barras")
+      .select("id, producto_id")
+      .eq("codigo", codigo)
+      .single();
+
+    if (codigoExistente) {
+      if (codigoExistente.producto_id === productoId) {
+        return { success: false, error: "Este código ya está asociado a este producto" };
+      } else {
+        return { success: false, error: "Este código ya está asociado a otro producto" };
+      }
+    }
+
+    // 3. Asociar el código de barras
+    const { data: codigoData, error: codigoError } = await supabaseClient
+      .from("inv_codigos_barras")
+      .insert([{ producto_id: productoId, codigo, tipo }])
+      .select()
+      .single();
+
+    if (codigoError) throw codigoError;
+
+    // 4. Incrementar el stock en 1
+    const stockAnterior = parseFloat(producto.stock_actual) || 0;
+    const nuevoStock = stockAnterior + 1;
+
+    const { error: updateError } = await supabaseClient
+      .from("inv_productos")
+      .update({ stock_actual: nuevoStock, updated_at: new Date().toISOString() })
+      .eq("id", productoId);
+
+    if (updateError) throw updateError;
+
+    // 5. Registrar movimiento de stock
+    await supabaseClient
+      .from("inv_movimientos_stock")
+      .insert([{
+        producto_id: productoId,
+        tipo: "entrada",
+        cantidad: 1,
+        stock_anterior: stockAnterior,
+        stock_nuevo: nuevoStock,
+        referencia: `Código asociado: ${codigo}`,
+        nota: "Stock incrementado automáticamente al asociar código de barras"
+      }]);
+
+    // 6. Registrar auditoría
+    await registrarAuditoria("asociar_codigo_incremento", "codigo_barras", codigoData.id, {
+      producto_id: productoId,
+      codigo,
+      stock_anterior: stockAnterior,
+      stock_nuevo: nuevoStock
+    });
+
+    return { success: true, data: codigoData, nuevoStock };
+  } catch (error) {
+    Logger.error("Error al asociar código e incrementar stock:", error);
     return { success: false, error: error.message };
   }
 }
@@ -889,6 +1006,7 @@ if (typeof window !== "undefined") {
     // Productos
     obtenerTodosProductos,
     buscarProductoPorSKU,
+    obtenerProductoPorId,
     buscarProductoPorCodigoBarras,
     crearProducto,
     actualizarProducto,
@@ -896,6 +1014,7 @@ if (typeof window !== "undefined") {
     
     // Códigos de barras
     asociarCodigoBarras,
+    asociarCodigoBarrasEIncrementarStock,
     eliminarCodigoBarras,
     
     // Proveedores

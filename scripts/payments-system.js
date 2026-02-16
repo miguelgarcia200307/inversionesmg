@@ -96,7 +96,7 @@ async function procesarPago(pagoData) {
         entidad_financiera: pagoData.entidad_financiera,
         nuevo_saldo: nuevoSaldo,
         nuevo_estado: nuevoEstado,
-        tiene_comprobante: !!pagoData.soporte_url
+        tiene_comprobante: !!(pagoData.soporte_url || pagoData.soporte_path)
       }
     });
 
@@ -213,6 +213,49 @@ async function obtenerPagosObligacion(obligacionId) {
     };
   } catch (error) {
     console.error('Error al obtener pagos obligación:', error);
+    return { success: false, pagos: [] };
+  }
+}
+
+/**
+ * Obtiene todos los pagos de las obligaciones de un cliente
+ */
+async function obtenerPagosCliente(clienteId) {
+  try {
+    // Obtener obligaciones del cliente
+    const { data: obligaciones } = await supabaseClient
+      .from('obligaciones')
+      .select('id')
+      .eq('cliente_id', clienteId);
+
+    if (!obligaciones || obligaciones.length === 0) {
+      return { success: true, pagos: [] };
+    }
+
+    const obligacionIds = obligaciones.map(o => o.id);
+
+    // Obtener pagos de todas las obligaciones del cliente
+    const { data, error } = await supabaseClient
+      .from('pagos')
+      .select(`
+        *,
+        cuotas!inner(
+          numero,
+          valor_cuota,
+          obligacion_id
+        )
+      `)
+      .in('cuotas.obligacion_id', obligacionIds)
+      .order('fecha_pago', { ascending: false });
+
+    if (error) throw error;
+
+    return {
+      success: true,
+      pagos: data || []
+    };
+  } catch (error) {
+    console.error('Error al obtener pagos cliente:', error);
     return { success: false, pagos: [] };
   }
 }

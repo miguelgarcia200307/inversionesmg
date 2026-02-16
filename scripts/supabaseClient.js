@@ -4,8 +4,21 @@
 const SUPABASE_URL = "https://pbsthkwfesosrdtlrcdx.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_QJE6HG0fnPL2KxvagaaZ4w_nSjUPyrF";
 
-// Inicializar cliente de Supabase
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Inicializar cliente de Supabase con configuración explícita
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  db: {
+    schema: 'public',
+  },
+  auth: {
+    persistSession: false,
+  },
+  global: {
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+  },
+});
 
 // ========== FUNCIONES DE CLIENTES ==========
 
@@ -21,6 +34,36 @@ async function buscarClientePorDocumento(documento) {
     return data;
   } catch (error) {
     console.error("Error al buscar cliente:", error);
+    return null;
+  }
+}
+
+async function obtenerClientePorId(id) {
+  try {
+    // Asegurar que el ID sea un número entero
+    const clienteId = parseInt(id, 10);
+    if (isNaN(clienteId)) {
+      console.error("ID de cliente inválido:", id);
+      return null;
+    }
+
+    const { data, error } = await supabaseClient
+      .from("clientes")
+      .select("*")
+      .eq("id", clienteId)
+      .maybeSingle();
+
+    if (error) {
+      // Solo logear si no es "no encontrado"
+      if (error.code !== "PGRST116") {
+        console.error("Error al obtener cliente por ID:", clienteId, error);
+      }
+      return null;
+    }
+    
+    return data;
+  } catch (error) {
+    console.error("Error al obtener cliente por ID:", id, error);
     return null;
   }
 }
@@ -143,6 +186,26 @@ async function obtenerObligacionesCliente(clienteId) {
     return data || [];
   } catch (error) {
     console.error("Error al obtener obligaciones:", error);
+    return [];
+  }
+}
+
+/**
+ * Obtiene obligaciones básicas de un cliente (sin relaciones)
+ * Útil para listados y resúmenes
+ */
+async function obtenerObligacionesBasicasCliente(clienteId) {
+  try {
+    const { data, error } = await supabaseClient
+      .from("obligaciones")
+      .select("id,tipo,capital,estado,created_at")
+      .eq("cliente_id", clienteId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  } catch (error) {
+    console.error("Error al obtener obligaciones básicas:", error);
     return [];
   }
 }
@@ -302,7 +365,7 @@ async function obtenerResumenFinancieroCliente(clienteId) {
     hoy.setHours(0, 0, 0, 0);
 
     for (const obl of obligaciones || []) {
-      total_prestado += parseFloat(obl.monto_total) || 0;
+      total_prestado += parseFloat(obl.capital) || 0;
 
       for (const cuota of obl.cuotas || []) {
         const saldo = cuota.saldo_pendiente ?? cuota.valor_cuota;
@@ -488,6 +551,71 @@ async function obtenerAuditoria(filters = {}) {
   } catch (error) {
     console.error("Error al obtener auditoría:", error);
     return [];
+  }
+}
+
+/**
+ * Corrige los registros de auditoría de pagos para actualizar tiene_comprobante
+ */
+async function corregirAuditoriaComprobantes() {
+  try {
+    // Obtener todos los registros de auditoría de registrar_pago
+    const { data: registros, error: errorAuditoria } = await supabaseClient
+      .from("auditoria")
+      .select("id, entidad_id, detalle_json")
+      .eq("accion", "registrar_pago")
+      .eq("entidad", "pago");
+
+    if (errorAuditoria) throw errorAuditoria;
+    if (!registros || registros.length === 0) {
+      return { success: true, actualizados: 0 };
+    }
+
+    // Obtener IDs de pagos únicos
+    const pagoIds = [...new Set(registros.map(r => r.entidad_id))];
+
+    // Obtener información de pagos
+    const { data: pagos, error: errorPagos } = await supabaseClient
+      .from("pagos")
+      .select("id, soporte_url, soporte_path")
+      .in("id", pagoIds);
+
+    if (errorPagos) throw errorPagos;
+
+    // Crear mapa de pagos por ID
+    const pagosPorId = {};
+    pagos.forEach(p => {
+      pagosPorId[p.id] = p;
+    });
+
+    // Actualizar registros de auditoría
+    let actualizados = 0;
+    for (const registro of registros) {
+      const pago = pagosPorId[registro.entidad_id];
+      if (pago) {
+        const tieneComprobante = !!(pago.soporte_url || pago.soporte_path);
+        const detalleActual = registro.detalle_json || {};
+        
+        // Solo actualizar si el valor es diferente
+        if (detalleActual.tiene_comprobante !== tieneComprobante) {
+          detalleActual.tiene_comprobante = tieneComprobante;
+          
+          const { error: errorUpdate } = await supabaseClient
+            .from("auditoria")
+            .update({ detalle_json: detalleActual })
+            .eq("id", registro.id);
+
+          if (!errorUpdate) {
+            actualizados++;
+          }
+        }
+      }
+    }
+
+    return { success: true, actualizados };
+  } catch (error) {
+    console.error("Error al corregir auditoría:", error);
+    return { success: false, error: error.message };
   }
 }
 

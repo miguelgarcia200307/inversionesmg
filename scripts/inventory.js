@@ -17,6 +17,20 @@ const INVENTORY_CONFIG = {
 const SCANNER_DEBUG = localStorage.getItem('scanner_debug') === 'true' || false;
 const SCANNER_NO_DETECT_TIMEOUT = 15000; // 15 segundos sin detectar → mostrar tips (menos intrusivo)
 
+// ========== CONFIGURACIÓN DE VALIDACIÓN DE CÓDIGOS ==========
+const CODE_VALIDATION = {
+  MIN_LENGTH: 3,                    // Mínimo 3 caracteres
+  MAX_LENGTH: 50,                   // Máximo 50 caracteres
+  CONSISTENCY_CHECKS: 3,            // Número de lecturas para confirmar
+  CONSISTENCY_TIMEOUT: 1500,        // Tiempo limite para validaciones (ms)
+  VALIDATION_DELAY: 300,            // Delay entre validaciones (ms)
+  ALLOWED_PATTERNS: [
+    /^\d+$/,                        // Solo números
+    /^[A-Z0-9]+$/i,                // Alfanumérico
+    /^[A-Z0-9\-\_\.]+$/i           // Con guiones, guiones bajos y puntos
+  ]
+};
+
 /**
  * ESTRATEGIA DE DETECCIÓN MULTI-INTENTO (FIX PROBLEMA ROI)
  * ========================================================
@@ -67,6 +81,13 @@ let lastScanTime = 0;
 let barcodeDetector = null;
 let scannerMode = "registro"; // 'venta', 'registro', 'asociar' - Por defecto registro para inventarios
 let currentProductoForAssociation = null;
+
+// ========== VARIABLES PARA VALIDACIÓN DE CÓDIGOS ==========
+let codeValidationBuffer = [];        // Buffer de lecturas para validación
+let validationInProgress = false;     // Si está validando un código
+let lastValidatedCode = null;         // Último código validado exitosamente
+let validationStartTime = 0;          // Timestamp de inicio de validación
+
 let carritoVenta = []; // Carrito de ventas
 let loginAttempts = 0;
 let loginLockoutUntil = null;
@@ -4766,45 +4787,242 @@ async function initZxingFallback() {
 }
 
 /**
- * Función unificada para procesar código detectado
- * Maneja anti-duplicado, efectos visuales y llamada a processScan
+ * Valida si un código tiene formato válido
  */
-async function onBarcodeDetected(code) {
-  if (!code) return;
+function isValidBarcodeFormat(code) {
+  if (!code || typeof code !== 'string') return false;
   
-  // Anti-duplicado
-  const now = Date.now();
-  if (code === lastScannedCode && (now - lastScanTime) < INVENTORY_CONFIG.SCAN_DUPLICATE_TIMEOUT) {
-    return;
+  // Verificar longitud
+  if (code.length < CODE_VALIDATION.MIN_LENGTH || code.length > CODE_VALIDATION.MAX_LENGTH) {
+    if (SCANNER_DEBUG) Logger.warn(`Código con longitud inválida: ${code.length} caracteres`);
+    return false;
   }
   
+  // Verificar patrones permitidos
+  const isValidPattern = CODE_VALIDATION.ALLOWED_PATTERNS.some(pattern => pattern.test(code));
+  if (!isValidPattern) {
+    if (SCANNER_DEBUG) Logger.warn(`Código con formato inválido: ${code}`);
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Obtiene el código más frecuente del buffer de validación
+ */
+function getMostFrequentCode(buffer) {
+  const frequency = {};
+  buffer.forEach(code => {
+    frequency[code] = (frequency[code] || 0) + 1;
+  });
+  
+  let maxCount = 0;
+  let mostFrequent = null;
+  
+  for (const [code, count] of Object.entries(frequency)) {
+    if (count > maxCount) {
+      maxCount = count;
+      mostFrequent = code;
+    }
+  }
+  
+  return { code: mostFrequent, frequency: maxCount, total: buffer.length };
+}
+
+/**
+ * Valida consistencia de código mediante múltiples lecturas
+ */
+async function validateCodeConsistency(code) {
+  if (!isValidBarcodeFormat(code)) {
+    if (SCANNER_DEBUG) Logger.warn(`Código rechazado por formato: ${code}`);
+    return false;
+  }
+  
+  // Si ya hay una validación en progreso, agregar al buffer
+  if (validationInProgress) {
+    codeValidationBuffer.push(code);
+    
+    // Verificar si hemos completado las validaciones
+    if (codeValidationBuffer.length >= CODE_VALIDATION.CONSISTENCY_CHECKS) {
+      const result = getMostFrequentCode(codeValidationBuffer);
+      const consistencyRatio = result.frequency / result.total;
+      
+      if (SCANNER_DEBUG) {
+        Logger.info(`Validación completa: ${result.code} (${result.frequency}/${result.total} = ${Math.round(consistencyRatio * 100)}%)`);
+      }
+      
+      // Si el 70% o más de las lecturas coinciden, considerar válido
+      if (consistencyRatio >= 0.7) {
+        resetValidation();
+        return result.code;
+      } else {
+        // Lecturas inconsistentes - mostrar opción de confirmación manual
+        if (SCANNER_DEBUG) Logger.warn(`Lecturas inconsistentes para código`);
+        resetValidation();
+        return await showInconsistentReadDialog(codeValidationBuffer);
+      }
+    }
+    return false; // Continuar validando
+  }
+  
+  // Iniciar nueva validación
+  validationInProgress = true;
+  validationStartTime = Date.now();
+  codeValidationBuffer = [code];
+  
+  // Actualizar UI para mostrar validación en progreso
+  updateScannerStatusValidating(code);
+  
+  // Timeout para validación
+  setTimeout(() => {
+    if (validationInProgress && codeValidationBuffer.length < CODE_VALIDATION.CONSISTENCY_CHECKS) {
+      if (SCANNER_DEBUG) Logger.warn("Timeout en validación - usando lectura parcial");
+      
+      const result = getMostFrequentCode(codeValidationBuffer);
+      if (result.frequency >= 2) { // Al menos 2 lecturas iguales
+        resetValidation();
+        onValidatedCode(result.code);
+      } else {
+        resetValidation();
+        showTimeoutValidationDialog(codeValidationBuffer);
+      }
+    }
+  }, CODE_VALIDATION.CONSISTENCY_TIMEOUT);
+  
+  return false; // Continuar validando
+}
+
+/**
+ * Resetea el sistema de validación
+ */
+function resetValidation() {
+  validationInProgress = false;
+  codeValidationBuffer = [];
+  validationStartTime = 0;
+}
+
+/**
+ * Actualiza la UI durante validación
+ */
+function updateScannerStatusValidating(code) {
+  const scannerInfo = document.getElementById('scannerInfo');
+  const progress = Math.min(codeValidationBuffer.length / CODE_VALIDATION.CONSISTENCY_CHECKS, 1);
+  const percentage = Math.round(progress * 100);
+  
+  if (scannerInfo) {
+    scannerInfo.innerHTML = `
+      🔍 Validando código...<br>
+      <small>${codeValidationBuffer.length}/${CODE_VALIDATION.CONSISTENCY_CHECKS} lecturas</small>
+      <div style="width: 100%; background: rgba(255,255,255,0.3); border-radius: 10px; margin-top: 8px; height: 6px;">
+        <div style="width: ${percentage}%; background: #4CAF50; height: 100%; border-radius: 10px; transition: width 0.3s ease;"></div>
+      </div>
+    `;
+    scannerInfo.style.color = '#FFA726';
+  }
+}
+
+/**
+ * Muestra diálogo para lecturas inconsistentes
+ */
+async function showInconsistentReadDialog(readings) {
+  return new Promise((resolve) => {
+    const frequency = {};
+    readings.forEach(code => {
+      frequency[code] = (frequency[code] || 0) + 1;
+    });
+    
+    const codes = Object.entries(frequency)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 3); // Top 3 códigos más frecuentes
+    
+    const options = codes.map(([code, count]) => 
+      `<button class="btn-primary" onclick="resolveInconsistent('${code}')" style="margin: 0.5rem; padding: 0.75rem;">
+        ${code}<br><small>${count} lectura${count > 1 ? 's' : ''}</small>
+      </button>`
+    ).join('');
+    
+    showModal("🔍 Lecturas Inconsistentes", `
+      <div style="text-align: center;">
+        <p>Se detectaron lecturas diferentes para el mismo código.</p>
+        <p><strong>Selecciona el código correcto:</strong></p>
+        <div style="display: flex; flex-direction: column; align-items: center;">
+          ${options}
+          <button class="btn-secondary" onclick="resolveInconsistent(null)" style="margin-top: 1rem;">
+            ❌ Cancelar y escanear de nuevo
+          </button>
+        </div>
+      </div>
+    `, '');
+    
+    window.resolveInconsistent = (selectedCode) => {
+      hideModal();
+      delete window.resolveInconsistent;
+      resolve(selectedCode);
+    };
+  });
+}
+
+/**
+ * Muestra diálogo para validación con timeout
+ */
+function showTimeoutValidationDialog(readings) {
+  const result = getMostFrequentCode(readings);
+  
+  if (result.frequency >= 2) {
+    showToast(`⚠️ Validación parcial: usando "${result.code}"`, "warning");
+    onValidatedCode(result.code);
+  } else {
+    showToast("❌ No se pudo validar el código. Intenta de nuevo.", "error");
+  }
+}
+
+/**
+ * Procesa un código ya validado
+ */
+async function onValidatedCode(code) {
+  lastValidatedCode = code;
   lastScannedCode = code;
-  lastScanTime = now;
+  lastScanTime = Date.now();
   
-  Logger.info(`🎯 Código detectado: ${code}`);
+  if (SCANNER_DEBUG) Logger.info(`✅ Código validado: ${code}`);
   
-  // Vibración
-  vibrate();
+  // Vibración de éxito
+  vibrate([50, 30, 50]);
   
-  // Efecto de flash visual
+  // Efectos visuales de éxito
+  showScannerSuccess();
+  
+  // Procesar según modo
+  await processScan(code);
+  
+  // Cerrar scanner después de un momento
+  setTimeout(() => {
+    closeScanner();
+  }, 1000);
+}
+
+/**
+ * Efectos visuales de éxito en scanner
+ */
+function showScannerSuccess() {
   const viewport = document.querySelector('.inv-scanner-viewport');
-  if (viewport) {
-    viewport.classList.add('flash');
-    setTimeout(() => viewport.classList.remove('flash'), 400);
-  }
-  
-  // Feedback visual de éxito con borde verde
   const instructionsBox = document.getElementById('scannerInstructionsBox');
   const scannerInfo = document.getElementById('scannerInfo');
   const overlay = document.querySelector('.inv-scanner-frame');
   const corners = document.querySelectorAll('.inv-scanner-corner');
+  
+  if (viewport) {
+    viewport.classList.add('flash');
+    setTimeout(() => viewport.classList.remove('flash'), 400);
+  }
   
   if (instructionsBox) {
     instructionsBox.classList.add('success');
   }
   
   if (scannerInfo) {
-    scannerInfo.textContent = `✅ Código detectado`;
+    scannerInfo.innerHTML = `✅ Código validado correctamente`;
     scannerInfo.style.color = '#4CAF50';
     scannerInfo.style.fontWeight = 'bold';
   }
@@ -4814,35 +5032,34 @@ async function onBarcodeDetected(code) {
     overlay.style.boxShadow = '0 0 20px rgba(76, 175, 80, 0.6)';
   }
   
-  // Cambiar color de las esquinas también
   corners.forEach(corner => {
     corner.style.borderColor = '#4CAF50';
-    corner.style.filter = 'drop-shadow(0 0 16px rgba(76, 175, 80, 0.8)) drop-shadow(0 0 32px rgba(76, 175, 80, 0.4))';
+    corner.style.filter = 'drop-shadow(0 0 16px rgba(76, 175, 80, 0.8))';
   });
+}
+
+/**
+ * Función unificada para procesar código detectado
+ * Ahora con validación de consistencia
+ */
+async function onBarcodeDetected(code) {
+  if (!code) return;
   
-  // Procesar según modo
-  await processScan(code);
+  // Evitar procesar el mismo código si ya fue validado recientemente
+  const now = Date.now();
+  if (code === lastValidatedCode && (now - lastScanTime) < INVENTORY_CONFIG.SCAN_DUPLICATE_TIMEOUT) {
+    return;
+  }
   
-  // Cerrar scanner automáticamente después de 1 segundo
-  setTimeout(() => {
-    if (instructionsBox) {
-      instructionsBox.classList.remove('success');
-    }
-    if (scannerInfo) {
-      scannerInfo.style.color = '';
-      scannerInfo.style.fontWeight = '';
-    }
-    if (overlay) {
-      overlay.style.borderColor = '';
-      overlay.style.boxShadow = '';
-    }
-    // Restaurar color de las esquinas
-    corners.forEach(corner => {
-      corner.style.borderColor = '';
-      corner.style.filter = '';
-    });
-    closeScanner();
-  }, 1000);
+  if (SCANNER_DEBUG) Logger.info(`🎯 Código detectado (sin validar): ${code}`);
+  
+  // Validar consistencia
+  const validatedCode = await validateCodeConsistency(code);
+  
+  if (validatedCode) {
+    await onValidatedCode(validatedCode);
+  }
+  // Si no está validado aún, continuar escaneando
 }
 
 /**
